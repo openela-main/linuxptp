@@ -1,0 +1,100 @@
+commit 25dcf01e340d85bcdbe7b3c24eac7fe1ce7ea0c2
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Mar 10 17:05:55 2021 +0100
+
+    Avoid unaligned pointers to packed members.
+    
+    This fixes "taking address of packed member ... may result in an
+    unaligned pointer value [-Waddress-of-packed-member]" warnings from gcc.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 7005636..f88df58 100644
+--- a/clock.c
++++ b/clock.c
+@@ -350,6 +350,7 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 	struct time_status_np *tsn;
+ 	struct tlv_extra *extra;
+ 	struct PTPText *text;
++	uint16_t duration;
+ 	int datalen = 0;
+ 
+ 	extra = tlv_extra_alloc();
+@@ -452,7 +453,8 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 			break;
+ 		}
+ 		sen = (struct subscribe_events_np *)tlv->data;
+-		clock_get_subscription(c, req, sen->bitmask, &sen->duration);
++		clock_get_subscription(c, req, sen->bitmask, &duration);
++		memcpy(&sen->duration, &duration, sizeof(sen->duration));
+ 		datalen = sizeof(*sen);
+ 		break;
+ 	case TLV_SYNCHRONIZATION_UNCERTAIN_NP:
+diff --git a/msg.c b/msg.c
+index c4516ad..dcb397c 100644
+--- a/msg.c
++++ b/msg.c
+@@ -19,6 +19,7 @@
+ #include <arpa/inet.h>
+ #include <errno.h>
+ #include <malloc.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <time.h>
+ 
+@@ -36,8 +37,8 @@ int assume_two_step = 0;
+ 
+ struct message_storage {
+ 	unsigned char reserved[MSG_HEADROOM];
+-	struct ptp_message msg;
+-} PACKED;
++	struct ptp_message msg __attribute__((aligned (8)));
++};
+ 
+ static TAILQ_HEAD(msg_pool, ptp_message) msg_pool = TAILQ_HEAD_INITIALIZER(msg_pool);
+ 
+diff --git a/tlv.c b/tlv.c
+index 879bb7e..98ef6e1 100644
+--- a/tlv.c
++++ b/tlv.c
+@@ -67,7 +67,7 @@ static void timestamp_net2host(struct Timestamp *t)
+ 	NTOHL(t->nanoseconds);
+ }
+ 
+-static uint16_t flip16(uint16_t *p)
++static uint16_t flip16(void *p)
+ {
+ 	uint16_t v;
+ 	memcpy(&v, p, sizeof(v));
+@@ -76,7 +76,7 @@ static uint16_t flip16(uint16_t *p)
+ 	return v;
+ }
+ 
+-static int64_t host2net64_unaligned(int64_t *p)
++static int64_t host2net64_unaligned(void *p)
+ {
+ 	int64_t v;
+ 	memcpy(&v, p, sizeof(v));
+@@ -85,7 +85,7 @@ static int64_t host2net64_unaligned(int64_t *p)
+ 	return v;
+ }
+ 
+-static int64_t net2host64_unaligned(int64_t *p)
++static int64_t net2host64_unaligned(void *p)
+ {
+ 	int64_t v;
+ 	memcpy(&v, p, sizeof(v));
+diff --git a/util.h b/util.h
+index 41e33d4..739c8fd 100644
+--- a/util.h
++++ b/util.h
+@@ -57,7 +57,7 @@ const char *ts_str(enum timestamp_type ts);
+  */
+ int addreq(enum transport_type type, struct address *a, struct address *b);
+ 
+-static inline uint16_t align16(uint16_t *p)
++static inline uint16_t align16(void *p)
+ {
+ 	uint16_t v;
+ 	memcpy(&v, p, sizeof(v));

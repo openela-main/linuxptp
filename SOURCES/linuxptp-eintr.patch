@@ -1,0 +1,30 @@
+commit c8de9f33e437fb15cff32c0028f651d7cb916a37
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Sep 13 13:44:10 2022 +0200
+
+    sk: Handle EINTR when waiting for transmit timestamp.
+    
+    If ptp4l received a signal in poll() waiting for a transmit timestamp,
+    multiple (possibly confusing) error messages are logged before exit.
+    
+    If poll() returns with EINTR, call it once again to get the timestamp
+    and avoid logging the errors. Don't call it in a loop to avoid getting
+    stuck in case the timestamp is lost and the signal is repeated before
+    the poll timeout can be reached.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/sk.c b/sk.c
+index 80075be..d27abff 100644
+--- a/sk.c
++++ b/sk.c
+@@ -354,6 +354,9 @@ int sk_receive(int fd, void *buf, int buflen,
+ 	if (flags == MSG_ERRQUEUE) {
+ 		struct pollfd pfd = { fd, sk_events, 0 };
+ 		res = poll(&pfd, 1, sk_tx_timeout);
++		/* Retry once on EINTR to avoid logging errors before exit */
++		if (res < 0 && errno == EINTR)
++			res = poll(&pfd, 1, sk_tx_timeout);
+ 		if (res < 1) {
+ 			pr_err(res ? "poll for tx timestamp failed: %m" :
+ 			             "timed out while polling for tx timestamp");

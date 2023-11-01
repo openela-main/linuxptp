@@ -1,0 +1,208 @@
+commit 513c7457865dba262a43e03fbe9178f4b08ba319
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Oct 24 15:25:30 2022 +0200
+
+    Drop support for old kernels returning zero frequency.
+    
+    Kernels before 3.10 had a bug in reading of the system clock frequency,
+    which was worked around by commit da347d7a36f2 ("ptp4l: Set clock
+    frequency on start").
+    
+    Drop this workaround and support for the old kernels to make
+    clockadj_get_freq() useful.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index f3df220..9079428 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1147,11 +1147,6 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 
+ 	if (c->clkid != CLOCK_INVALID) {
+ 		fadj = (int) clockadj_get_freq(c->clkid);
+-		/* Due to a bug in older kernels, the reading may silently fail
+-		   and return 0. Set the frequency back to make sure fadj is
+-		   the actual frequency of the clock. */
+-		clockadj_set_freq(c->clkid, fadj);
+-
+ 		/* Disable write phase mode if not implemented by driver */
+ 		if (c->write_phase_mode && !phc_has_writephase(c->clkid)) {
+ 			pr_err("clock does not support write phase mode");
+@@ -1746,7 +1741,6 @@ int clock_switch_phc(struct clock *c, int phc_index)
+ 		return -1;
+ 	}
+ 	fadj = (int) clockadj_get_freq(clkid);
+-	clockadj_set_freq(clkid, fadj);
+ 	servo = servo_create(c->config, c->servo_type, -fadj, max_adj, 0);
+ 	if (!servo) {
+ 		pr_err("Switching PHC, failed to create clock servo");
+diff --git a/phc2sys.c b/phc2sys.c
+index 5f6fbaa..af948eb 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -147,9 +147,6 @@ static struct servo *servo_add(struct phc2sys_private *priv,
+ 
+ 	clockadj_init(clock->clkid);
+ 	ppb = clockadj_get_freq(clock->clkid);
+-	/* The reading may silently fail and return 0, reset the frequency to
+-	   make sure ppb is the actual frequency of the clock. */
+-	clockadj_set_freq(clock->clkid, ppb);
+ 	if (clock->clkid == CLOCK_REALTIME) {
+ 		sysclk_set_leap(0);
+ 		max_ppb = sysclk_max_freq();
+diff --git a/ts2phc_slave.c b/ts2phc_slave.c
+index 749efe5..5541d91 100644
+--- a/ts2phc_slave.c
++++ b/ts2phc_slave.c
+@@ -183,10 +183,6 @@ static struct ts2phc_slave *ts2phc_slave_create(struct config *cfg, const char *
+ 	pr_debug("PHC slave %s has ptp index %d", device, junk);
+ 
+ 	fadj = (int) clockadj_get_freq(slave->clk);
+-	/* Due to a bug in older kernels, the reading may silently fail
+-	   and return 0. Set the frequency back to make sure fadj is
+-	   the actual frequency of the clock. */
+-	clockadj_set_freq(slave->clk, fadj);
+ 
+ 	max_adj = phc_max_adj(slave->clk);
+ 
+
+commit 80d6875b0072c7ea636a5631e590fa72d169c351
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Oct 24 15:25:31 2022 +0200
+
+    Don't accept errors in clockadj_get_freq().
+    
+    Exit if an error is returned from the clock_adjtime() call in
+    clockadj_get_freq(). No recoverable errors are expected.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clockadj.c b/clockadj.c
+index 957dc57..4c920b9 100644
+--- a/clockadj.c
++++ b/clockadj.c
+@@ -19,6 +19,7 @@
+ 
+ #include <errno.h>
+ #include <math.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+ 
+@@ -72,6 +73,7 @@ double clockadj_get_freq(clockid_t clkid)
+ 	memset(&tx, 0, sizeof(tx));
+ 	if (clock_adjtime(clkid, &tx) < 0) {
+ 		pr_err("failed to read out the clock frequency adjustment: %m");
++		exit(1);
+ 	} else {
+ 		f = tx.freq / 65.536;
+ 		if (clkid == CLOCK_REALTIME && realtime_nominal_tick && tx.tick)
+
+commit 211cbfe810ef4082d1af8e9b50f65d4f6fd7246a
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Oct 24 15:25:32 2022 +0200
+
+    Extend clockcheck to check for changes in frequency.
+    
+    Before setting the new frequency offset on a clock update, compare the
+    current frequency returned by the kernel with the value saved from the
+    previous update. Print a warning message if the difference is larger
+    than 1 ppb, allowing for rounding errors in conversion to and from
+    double. The kernel caches the value set by clock_adjtime() in shifted
+    ppm, it doesn't request it from the driver, which can have a lower
+    resulution.
+    
+    This should detect misconfigurations where multiple processes are trying
+    to control the clock (e.g. another ptp4l/phc2sys instance or an NTP
+    client), even when they don't step the clock.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 9079428..eea7983 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1760,6 +1760,9 @@ int clock_switch_phc(struct clock *c, int phc_index)
+ 
+ static void clock_synchronize_locked(struct clock *c, double adj)
+ {
++	if (c->sanity_check) {
++		clockcheck_freq(c->sanity_check, clockadj_get_freq(c->clkid));
++	}
+ 	clockadj_set_freq(c->clkid, -adj);
+ 	if (c->clkid == CLOCK_REALTIME) {
+ 		sysclk_set_sync();
+diff --git a/clockcheck.c b/clockcheck.c
+index f0141be..b5a69cc 100644
+--- a/clockcheck.c
++++ b/clockcheck.c
+@@ -123,6 +123,16 @@ void clockcheck_set_freq(struct clockcheck *cc, int freq)
+ 	cc->freq_known = 1;
+ }
+ 
++int clockcheck_freq(struct clockcheck *cc, int freq)
++{
++	/* Allow difference of 1 ppb due to conversion to/from double */
++	if (cc->freq_known && abs(cc->current_freq - freq) > 1) {
++		pr_warning("clockcheck: clock frequency changed unexpectedly!");
++		return 1;
++	}
++	return 0;
++}
++
+ void clockcheck_step(struct clockcheck *cc, int64_t step)
+ {
+ 	if (cc->last_ts)
+diff --git a/clockcheck.h b/clockcheck.h
+index 1ff86eb..4b09b98 100644
+--- a/clockcheck.h
++++ b/clockcheck.h
+@@ -54,6 +54,14 @@ int clockcheck_sample(struct clockcheck *cc, uint64_t ts);
+  */
+ void clockcheck_set_freq(struct clockcheck *cc, int freq);
+ 
++/**
++ * Check whether the frequency correction did not change unexpectedly.
++ * @param cc   Pointer to a clock check obtained via @ref clockcheck_create().
++ * @param freq Current reading of the frequency correction in ppb.
++ * @return Zero if the frequency did not change, non-zero otherwise.
++ */
++int clockcheck_freq(struct clockcheck *cc, int freq);
++
+ /**
+  * Inform clock check that the clock was stepped.
+  * @param cc   Pointer to a clock check obtained via @ref clockcheck_create().
+diff --git a/phc2sys.c b/phc2sys.c
+index af948eb..4daa1bf 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -566,6 +566,9 @@ static void update_clock(struct phc2sys_private *priv, struct clock *clock,
+ 		/* Fall through. */
+ 	case SERVO_LOCKED:
+ 	case SERVO_LOCKED_STABLE:
++		if (clock->sanity_check)
++			clockcheck_freq(clock->sanity_check,
++					clockadj_get_freq(clock->clkid));
+ 		clockadj_set_freq(clock->clkid, -ppb);
+ 		if (clock->clkid == CLOCK_REALTIME)
+ 			sysclk_set_sync();
+diff --git a/ptp4l.8 b/ptp4l.8
+index 4917240..f760e2b 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -605,8 +605,10 @@ This option used to be called
+ The maximum allowed frequency offset between uncorrected clock and the system
+ monotonic clock in parts per billion (ppb). This is used as a sanity check of
+ the synchronized clock. When a larger offset is measured, a warning message
+-will be printed and the servo will be reset. When set to 0, the sanity check is
+-disabled. The default is 200000000 (20%).
++will be printed and the servo will be reset. If the frequency correction set by
++ptp4l changes unexpectedly between updates of the clock (e.g. due to another
++process trying to control the clock), a warning message will be printed. When
++set to 0, the sanity check is disabled. The default is 200000000 (20%).
+ .TP
+ .B initial_delay
+ The initial path delay of the clock in nanoseconds used for synchronization of

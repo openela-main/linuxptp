@@ -1,0 +1,510 @@
+commit f32a8469a236728fb158ce997385b53f92b821cc
+Author: Jacob Keller <jacob.e.keller@intel.com>
+Date:   Tue Nov 23 14:43:26 2021 -0800
+
+    phc2sys: move read_phc into clock_adj.c
+    
+    The read_phc function implemented in phc2sys.c is used to perform clock
+    comparison between two arbitrary clocks using clock_gettime.
+    
+    This support is used to allow phc2sys to work on any pair of clocks and
+    is implemented in a very similar manner as the kernel PTP_SYS_OFFSET
+    ioctls.
+    
+    Make this function easier to re-use by moving it out of phc2sys.c and
+    into a more accessible location. clockadj.c seems like a reasonable
+    location as this file has many functions which deal with clockid_t
+    values, and this functionality is tangentially related to adjusting
+    clocks.
+    
+    Moving this function will allow using it in the phc_ctl program in a
+    future change.
+    
+    Notice that read_phc returned 0 on failure and 1 on success. This is
+    fairly non-standard, so lets update clockadj_compare to return 0 on
+    success and -1 on failure. Fix the call sites to check correctly and
+    report an error.
+    
+    Signed-off-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/clockadj.c b/clockadj.c
+index b5c78cd..e8c5789 100644
+--- a/clockadj.c
++++ b/clockadj.c
+@@ -139,6 +139,37 @@ int clockadj_max_freq(clockid_t clkid)
+ 	return f;
+ }
+ 
++int clockadj_compare(clockid_t clkid, clockid_t sysclk, int readings,
++		     int64_t *offset, uint64_t *ts, int64_t *delay)
++{
++	struct timespec tdst1, tdst2, tsrc;
++	int i;
++	int64_t interval, best_interval = INT64_MAX;
++
++	/* Pick the quickest clkid reading. */
++	for (i = 0; i < readings; i++) {
++		if (clock_gettime(sysclk, &tdst1) ||
++				clock_gettime(clkid, &tsrc) ||
++				clock_gettime(sysclk, &tdst2)) {
++			pr_err("failed to read clock: %m");
++			return -1;
++		}
++
++		interval = (tdst2.tv_sec - tdst1.tv_sec) * NS_PER_SEC +
++			tdst2.tv_nsec - tdst1.tv_nsec;
++
++		if (best_interval > interval) {
++			best_interval = interval;
++			*offset = (tdst1.tv_sec - tsrc.tv_sec) * NS_PER_SEC +
++				tdst1.tv_nsec - tsrc.tv_nsec + interval / 2;
++			*ts = tdst2.tv_sec * NS_PER_SEC + tdst2.tv_nsec;
++		}
++	}
++	*delay = best_interval;
++
++	return 0;
++}
++
+ void sysclk_set_leap(int leap)
+ {
+ 	clockid_t clkid = CLOCK_REALTIME;
+diff --git a/clockadj.h b/clockadj.h
+index 43325c8..b63ae38 100644
+--- a/clockadj.h
++++ b/clockadj.h
+@@ -63,6 +63,24 @@ void clockadj_step(clockid_t clkid, int64_t step);
+  */
+ int clockadj_max_freq(clockid_t clkid);
+ 
++/**
++ * Compare offset between two clocks
++ * @param clkid     A clock ID obtained using phc_open() or CLOCK_REALTIME
++ * @param sysclk    A clock ID obtained using phc_open() or CLOCK_REALTIME
++ * @param readings  Number of readings to try
++ * @param offset    On return, the nanoseconds offset between the clocks
++ * @param ts        On return, the time of sysclk in nanoseconds that was used
++ * @param delay     On return, the interval between two reads of sysclk
++ * @return Zero on success and non-zero on failure.
++ *
++ * Compare the offset between two clocks in a similar manner as the
++ * PTP_SYS_OFFSET ioctls. Performs multiple reads of sysclk with a read of
++ * clkid between in order to calculate the time difference of sysclk minus
++ * clkid.
++ */
++int clockadj_compare(clockid_t clkid, clockid_t sysclk, int readings,
++		     int64_t *offset, uint64_t *ts, int64_t *delay);
++
+ /**
+  * Set the system clock to insert/delete leap second at midnight.
+  * @param leap  +1 to insert leap second, -1 to delete leap second,
+diff --git a/phc2sys.c b/phc2sys.c
+index a36cbe0..7a547fa 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -486,37 +486,6 @@ static void reconfigure(struct phc2sys_private *priv)
+ 	pr_info("selecting %s as the master clock", src->device);
+ }
+ 
+-static int read_phc(clockid_t clkid, clockid_t sysclk, int readings,
+-		    int64_t *offset, uint64_t *ts, int64_t *delay)
+-{
+-	struct timespec tdst1, tdst2, tsrc;
+-	int i;
+-	int64_t interval, best_interval = INT64_MAX;
+-
+-	/* Pick the quickest clkid reading. */
+-	for (i = 0; i < readings; i++) {
+-		if (clock_gettime(sysclk, &tdst1) ||
+-				clock_gettime(clkid, &tsrc) ||
+-				clock_gettime(sysclk, &tdst2)) {
+-			pr_err("failed to read clock: %m");
+-			return 0;
+-		}
+-
+-		interval = (tdst2.tv_sec - tdst1.tv_sec) * NS_PER_SEC +
+-			tdst2.tv_nsec - tdst1.tv_nsec;
+-
+-		if (best_interval > interval) {
+-			best_interval = interval;
+-			*offset = (tdst1.tv_sec - tsrc.tv_sec) * NS_PER_SEC +
+-				tdst1.tv_nsec - tsrc.tv_nsec + interval / 2;
+-			*ts = tdst2.tv_sec * NS_PER_SEC + tdst2.tv_nsec;
+-		}
+-	}
+-	*delay = best_interval;
+-
+-	return 1;
+-}
+-
+ static int64_t get_sync_offset(struct phc2sys_private *priv, struct clock *dst)
+ {
+ 	int direction = priv->forced_sync_offset;
+@@ -672,8 +641,10 @@ static int do_pps_loop(struct phc2sys_private *priv, struct clock *clock,
+ 		/* If a PHC is available, use it to get the whole number
+ 		   of seconds in the offset and PPS for the rest. */
+ 		if (src != CLOCK_INVALID) {
+-			if (!read_phc(src, clock->clkid, priv->phc_readings,
+-				      &phc_offset, &phc_ts, &phc_delay))
++			if (clockadj_compare(src, clock->clkid,
++					     priv->phc_readings,
++					     &phc_offset, &phc_ts,
++					     &phc_delay))
+ 				return -1;
+ 
+ 			/* Convert the time stamp to the PHC time. */
+@@ -781,10 +752,11 @@ static int do_loop(struct phc2sys_private *priv, int subscriptions)
+ 				ts += offset;
+ 			} else {
+ 				/* use phc */
+-				if (!read_phc(priv->master->clkid, clock->clkid,
+-					      priv->phc_readings,
+-					      &offset, &ts, &delay))
+-					continue;
++				if (clockadj_compare(priv->master->clkid,
++						     clock->clkid,
++						     priv->phc_readings,
++						     &offset, &ts, &delay))
++					return -1;
+ 			}
+ 			update_clock(priv, clock, offset, ts, delay);
+ 		}
+
+commit 96486bda9ac1613fb36feb84d76ababd8972bba6
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue May 17 12:31:45 2022 +0200
+
+    clockadj: Change clockadj_compare() to return errno.
+    
+    Return -errno from the failed clock_gettime() to allow the callers to
+    check for specific errors.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clockadj.c b/clockadj.c
+index e8c5789..957dc57 100644
+--- a/clockadj.c
++++ b/clockadj.c
+@@ -17,6 +17,7 @@
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  */
+ 
++#include <errno.h>
+ #include <math.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -152,7 +153,7 @@ int clockadj_compare(clockid_t clkid, clockid_t sysclk, int readings,
+ 				clock_gettime(clkid, &tsrc) ||
+ 				clock_gettime(sysclk, &tdst2)) {
+ 			pr_err("failed to read clock: %m");
+-			return -1;
++			return -errno;
+ 		}
+ 
+ 		interval = (tdst2.tv_sec - tdst1.tv_sec) * NS_PER_SEC +
+diff --git a/clockadj.h b/clockadj.h
+index b63ae38..6db1d79 100644
+--- a/clockadj.h
++++ b/clockadj.h
+@@ -71,7 +71,7 @@ int clockadj_max_freq(clockid_t clkid);
+  * @param offset    On return, the nanoseconds offset between the clocks
+  * @param ts        On return, the time of sysclk in nanoseconds that was used
+  * @param delay     On return, the interval between two reads of sysclk
+- * @return Zero on success and non-zero on failure.
++ * @return Zero on success, or negative error code on failure.
+  *
+  * Compare the offset between two clocks in a similar manner as the
+  * PTP_SYS_OFFSET ioctls. Performs multiple reads of sysclk with a read of
+
+commit a523e893a15001025379e3c2dedb231e99cc886f
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Mar 24 11:55:35 2022 +0100
+
+    sysoff: Change sysoff_measure() to return errno.
+    
+    Return -errno from failed ioctl instead of the SYSOFF_* enum from the
+    measurement functions to allow the callers to check for specific errors.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/sysoff.c b/sysoff.c
+index 2743859..5d3b907 100644
+--- a/sysoff.c
++++ b/sysoff.c
+@@ -17,6 +17,7 @@
+  * with this program; if not, write to the Free Software Foundation, Inc.,
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  */
++#include <errno.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
+@@ -38,11 +39,11 @@ static int sysoff_precise(int fd, int64_t *result, uint64_t *ts)
+ 	memset(&pso, 0, sizeof(pso));
+ 	if (ioctl(fd, PTP_SYS_OFFSET_PRECISE, &pso)) {
+ 		pr_debug("ioctl PTP_SYS_OFFSET_PRECISE: %m");
+-		return SYSOFF_RUN_TIME_MISSING;
++		return -errno;
+ 	}
+ 	*result = pctns(&pso.sys_realtime) - pctns(&pso.device);
+ 	*ts = pctns(&pso.sys_realtime);
+-	return SYSOFF_PRECISE;
++	return 0;
+ }
+ 
+ static int64_t sysoff_estimate(struct ptp_clock_time *pct, int extended,
+@@ -98,10 +99,10 @@ static int sysoff_extended(int fd, int n_samples,
+ 	pso.n_samples = n_samples;
+ 	if (ioctl(fd, PTP_SYS_OFFSET_EXTENDED, &pso)) {
+ 		pr_debug("ioctl PTP_SYS_OFFSET_EXTENDED: %m");
+-		return SYSOFF_RUN_TIME_MISSING;
++		return -errno;
+ 	}
+ 	*result = sysoff_estimate(&pso.ts[0][0], 1, n_samples, ts, delay);
+-	return SYSOFF_EXTENDED;
++	return 0;
+ }
+ 
+ static int sysoff_basic(int fd, int n_samples,
+@@ -112,10 +113,10 @@ static int sysoff_basic(int fd, int n_samples,
+ 	pso.n_samples = n_samples;
+ 	if (ioctl(fd, PTP_SYS_OFFSET, &pso)) {
+ 		perror("ioctl PTP_SYS_OFFSET");
+-		return SYSOFF_RUN_TIME_MISSING;
++		return -errno;
+ 	}
+ 	*result = sysoff_estimate(pso.ts, 0, n_samples, ts, delay);
+-	return SYSOFF_BASIC;
++	return 0;
+ }
+ 
+ int sysoff_measure(int fd, int method, int n_samples,
+@@ -130,7 +131,7 @@ int sysoff_measure(int fd, int method, int n_samples,
+ 	case SYSOFF_BASIC:
+ 		return sysoff_basic(fd, n_samples, result, ts, delay);
+ 	}
+-	return SYSOFF_RUN_TIME_MISSING;
++	return -EOPNOTSUPP;
+ }
+ 
+ int sysoff_probe(int fd, int n_samples)
+diff --git a/sysoff.h b/sysoff.h
+index e4de919..5480f8f 100644
+--- a/sysoff.h
++++ b/sysoff.h
+@@ -44,7 +44,7 @@ int sysoff_probe(int fd, int n_samples);
+  * @param result     The estimated offset in nanoseconds.
+  * @param ts         The system time corresponding to the 'result'.
+  * @param delay      The delay in reading of the clock in nanoseconds.
+- * @return  One of the SYSOFF_ enumeration values.
++ * @return  Zero on success, negative error code otherwise.
+  */
+ int sysoff_measure(int fd, int method, int n_samples,
+ 		   int64_t *result, uint64_t *ts, int64_t *delay);
+
+commit 25b340eb1daad807d9485728f0917ec25a376e0c
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed May 18 10:21:29 2022 +0200
+
+    sysoff: Change log level of ioctl error messages.
+    
+    Change the log level of ioctl error messages to the error level to make
+    them visible in default configuration, with the exception of EOPNOTSUPP
+    which is expected in probing and should stay at the debug level to avoid
+    confusing users.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/sysoff.c b/sysoff.c
+index 5d3b907..a425275 100644
+--- a/sysoff.c
++++ b/sysoff.c
+@@ -28,6 +28,14 @@
+ 
+ #define NS_PER_SEC 1000000000LL
+ 
++static void print_ioctl_error(const char *name)
++{
++	if (errno == EOPNOTSUPP)
++		pr_debug("ioctl %s: %s", name, strerror(errno));
++	else
++		pr_err("ioctl %s: %s", name, strerror(errno));
++}
++
+ static int64_t pctns(struct ptp_clock_time *t)
+ {
+ 	return t->sec * NS_PER_SEC + t->nsec;
+@@ -38,7 +46,7 @@ static int sysoff_precise(int fd, int64_t *result, uint64_t *ts)
+ 	struct ptp_sys_offset_precise pso;
+ 	memset(&pso, 0, sizeof(pso));
+ 	if (ioctl(fd, PTP_SYS_OFFSET_PRECISE, &pso)) {
+-		pr_debug("ioctl PTP_SYS_OFFSET_PRECISE: %m");
++		print_ioctl_error("PTP_SYS_OFFSET_PRECISE");
+ 		return -errno;
+ 	}
+ 	*result = pctns(&pso.sys_realtime) - pctns(&pso.device);
+@@ -98,7 +106,7 @@ static int sysoff_extended(int fd, int n_samples,
+ 	memset(&pso, 0, sizeof(pso));
+ 	pso.n_samples = n_samples;
+ 	if (ioctl(fd, PTP_SYS_OFFSET_EXTENDED, &pso)) {
+-		pr_debug("ioctl PTP_SYS_OFFSET_EXTENDED: %m");
++		print_ioctl_error("PTP_SYS_OFFSET_EXTENDED");
+ 		return -errno;
+ 	}
+ 	*result = sysoff_estimate(&pso.ts[0][0], 1, n_samples, ts, delay);
+@@ -112,7 +120,7 @@ static int sysoff_basic(int fd, int n_samples,
+ 	memset(&pso, 0, sizeof(pso));
+ 	pso.n_samples = n_samples;
+ 	if (ioctl(fd, PTP_SYS_OFFSET, &pso)) {
+-		perror("ioctl PTP_SYS_OFFSET");
++		print_ioctl_error("PTP_SYS_OFFSET");
+ 		return -errno;
+ 	}
+ 	*result = sysoff_estimate(pso.ts, 0, n_samples, ts, delay);
+
+commit 755cf11ad6e5d02e11519b6e2644ee0f71da91ea
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Mar 24 12:41:49 2022 +0100
+
+    sysoff: Retry on EBUSY when probing supported ioctls.
+    
+    Handle EBUSY when probing support for a PTP_SYS_OFFSET ioctl. Try each
+    ioctl up to three times before giving up on it to make the detection
+    more reliable.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/sysoff.c b/sysoff.c
+index a425275..fc1f7ca 100644
+--- a/sysoff.c
++++ b/sysoff.c
+@@ -145,8 +145,8 @@ int sysoff_measure(int fd, int method, int n_samples,
+ int sysoff_probe(int fd, int n_samples)
+ {
+ 	int64_t junk, delay;
++	int i, j, err;
+ 	uint64_t ts;
+-	int i;
+ 
+ 	if (n_samples > PTP_MAX_SAMPLES) {
+ 		fprintf(stderr, "warning: %d exceeds kernel max readings %d\n",
+@@ -156,9 +156,15 @@ int sysoff_probe(int fd, int n_samples)
+ 	}
+ 
+ 	for (i = 0; i < SYSOFF_LAST; i++) {
+-		if (sysoff_measure(fd, i, n_samples, &junk, &ts, &delay) < 0)
+-			continue;
+-		return i;
++		for (j = 0; j < 3; j++) {
++			err = sysoff_measure(fd, i, n_samples, &junk, &ts,
++					     &delay);
++			if (err == -EBUSY)
++				continue;
++			if (err)
++				break;
++			return i;
++		}
+ 	}
+ 
+ 	return SYSOFF_RUN_TIME_MISSING;
+
+commit d1e8ea2405a42b42bcaf2166717fe0da6e9871ae
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 12:18:31 2022 +0100
+
+    phc2sys: Don't exit when reading of PHC fails with EBUSY.
+    
+    Reading of the PHC can occasionally fail with some drivers, e.g. the ice
+    driver returns EBUSY when it fails to get a lock. Continue in the loop
+    instead of exiting on the error.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index 7a547fa..b4e2e87 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -623,6 +623,7 @@ static int do_pps_loop(struct phc2sys_private *priv, struct clock *clock,
+ 	int64_t pps_offset, phc_offset, phc_delay;
+ 	uint64_t pps_ts, phc_ts;
+ 	clockid_t src = priv->master->clkid;
++	int err;
+ 
+ 	priv->master->source_label = "pps";
+ 
+@@ -641,10 +642,13 @@ static int do_pps_loop(struct phc2sys_private *priv, struct clock *clock,
+ 		/* If a PHC is available, use it to get the whole number
+ 		   of seconds in the offset and PPS for the rest. */
+ 		if (src != CLOCK_INVALID) {
+-			if (clockadj_compare(src, clock->clkid,
+-					     priv->phc_readings,
+-					     &phc_offset, &phc_ts,
+-					     &phc_delay))
++			err = clockadj_compare(src, clock->clkid,
++					       priv->phc_readings,
++					       &phc_offset, &phc_ts,
++					       &phc_delay);
++			if (err == -EBUSY)
++				continue;
++			if (err)
+ 				return -1;
+ 
+ 			/* Convert the time stamp to the PHC time. */
+@@ -692,6 +696,7 @@ static int do_loop(struct phc2sys_private *priv, int subscriptions)
+ 	struct clock *clock;
+ 	uint64_t ts;
+ 	int64_t offset, delay;
++	int err;
+ 
+ 	interval.tv_sec = priv->phc_interval;
+ 	interval.tv_nsec = (priv->phc_interval - interval.tv_sec) * 1e9;
+@@ -735,29 +740,32 @@ static int do_loop(struct phc2sys_private *priv, int subscriptions)
+ 			if (clock->clkid == CLOCK_REALTIME &&
+ 			    priv->master->sysoff_method >= 0) {
+ 				/* use sysoff */
+-				if (sysoff_measure(CLOCKID_TO_FD(priv->master->clkid),
+-						   priv->master->sysoff_method,
+-						   priv->phc_readings,
+-						   &offset, &ts, &delay) < 0)
+-					return -1;
++				err = sysoff_measure(CLOCKID_TO_FD(priv->master->clkid),
++						     priv->master->sysoff_method,
++						     priv->phc_readings,
++						     &offset, &ts, &delay);
+ 			} else if (priv->master->clkid == CLOCK_REALTIME &&
+ 				   clock->sysoff_method >= 0) {
+ 				/* use reversed sysoff */
+-				if (sysoff_measure(CLOCKID_TO_FD(clock->clkid),
+-						   clock->sysoff_method,
+-						   priv->phc_readings,
+-						   &offset, &ts, &delay) < 0)
+-					return -1;
+-				offset = -offset;
+-				ts += offset;
++				err = sysoff_measure(CLOCKID_TO_FD(clock->clkid),
++						     clock->sysoff_method,
++						     priv->phc_readings,
++						     &offset, &ts, &delay);
++				if (!err) {
++					offset = -offset;
++					ts += offset;
++				}
+ 			} else {
+ 				/* use phc */
+-				if (clockadj_compare(priv->master->clkid,
+-						     clock->clkid,
+-						     priv->phc_readings,
+-						     &offset, &ts, &delay))
+-					return -1;
++				err = clockadj_compare(priv->master->clkid,
++						       clock->clkid,
++						       priv->phc_readings,
++						       &offset, &ts, &delay);
+ 			}
++			if (err == -EBUSY)
++				continue;
++			if (err)
++				return -1;
+ 			update_clock(priv, clock, offset, ts, delay);
+ 		}
+ 	}
