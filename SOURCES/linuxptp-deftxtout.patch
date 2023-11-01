@@ -1,0 +1,82 @@
+commit 1a2dfe9b00b79a59acf905476bbc33c74d5770a3
+Author: Jacob Keller <jacob.e.keller@intel.com>
+Date:   Thu Jul 8 12:59:30 2021 -0700
+
+    Increase the default tx_timestamp_timeout to 10
+    
+    The tx_timestamp_timeout configuration defines the number of
+    milliseconds to wait for a Tx timestamp from the kernel stack. This
+    delay is necessary as Tx timestamps are captured after a packet is sent
+    and reported back via the socket error queue.
+    
+    The current default is to poll for up to 1 millisecond. In practice, it
+    turns out that this is not always enough time for hardware and software
+    to capture the timestamp and report it back. Some hardware designs
+    require reading timestamps over registers or other slow mechanisms.
+    
+    This extra delay results in the timestamp not being sent back to
+    userspace within the default 1 millisecond polling time. If that occurs
+    the following can be seen from ptp4l:
+    
+      ptp4l[4756.840]: timed out while polling for tx timestamp
+      ptp4l[4756.840]: increasing tx_timestamp_timeout may correct this issue,
+                       but it is likely caused by a driver bug
+      ptp4l[4756.840]: port 1 (p2p1): send sync failed
+      ptp4l[4756.840]: port 1 (p2p1): MASTER to FAULTY on FAULT_DETECTED
+                       (FT_UNSPECIFIED)
+    
+    This can confuse users because it implies this is a bug, when the
+    correct solution in many cases is to just increase the timeout to
+    a slightly higher value.
+    
+    Since we know this is a problem for many drivers and hardware designs,
+    lets increase the default timeout.
+    
+    Note that a longer timeout should not affect setups which return the
+    timestamp quickly. On modern kernels, the poll() call will return once
+    the timestamp is reported back to the socket error queue. (On old
+    kernels around the 3.x era the poll will sleep for the full duration
+    before reporting the timestamp, but this is now quite an old kernel
+    release).
+    
+    Signed-off-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/config.c b/config.c
+index 760b395..03d981e 100644
+--- a/config.c
++++ b/config.c
+@@ -324,7 +324,7 @@ struct config_item config_tab[] = {
+ 	GLOB_ITEM_INT("ts2phc.pulsewidth", 500000000, 1000000, 999000000),
+ 	PORT_ITEM_ENU("tsproc_mode", TSPROC_FILTER, tsproc_enu),
+ 	GLOB_ITEM_INT("twoStepFlag", 1, 0, 1),
+-	GLOB_ITEM_INT("tx_timestamp_timeout", 1, 1, INT_MAX),
++	GLOB_ITEM_INT("tx_timestamp_timeout", 10, 1, INT_MAX),
+ 	PORT_ITEM_INT("udp_ttl", 1, 1, 255),
+ 	PORT_ITEM_INT("udp6_scope", 0x0E, 0x00, 0x0F),
+ 	GLOB_ITEM_STR("uds_address", "/var/run/ptp4l"),
+diff --git a/configs/default.cfg b/configs/default.cfg
+index 64ef3bd..d615610 100644
+--- a/configs/default.cfg
++++ b/configs/default.cfg
+@@ -51,7 +51,7 @@ hybrid_e2e		0
+ inhibit_multicast_service	0
+ net_sync_monitor	0
+ tc_spanning_tree	0
+-tx_timestamp_timeout	1
++tx_timestamp_timeout	10
+ unicast_listen		0
+ unicast_master_table	0
+ unicast_req_duration	3600
+diff --git a/ptp4l.8 b/ptp4l.8
+index fe9e150..7ca3474 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -496,7 +496,7 @@ switches all implement this option together with the BMCA.
+ .B tx_timestamp_timeout
+ The number of milliseconds to poll waiting for the tx time stamp from the kernel
+ when a message has recently been sent.
+-The default is 1.
++The default is 10.
+ .TP
+ .B check_fup_sync
+ Because of packet reordering that can occur in the network, in the

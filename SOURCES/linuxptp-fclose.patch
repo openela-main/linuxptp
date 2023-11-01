@@ -1,0 +1,22 @@
+commit e8a82d1b5be2d5bf9450a9acfe44e957b4867870
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jul 20 11:41:35 2021 +0200
+
+    lstab: Close file after reading.
+    
+    The lstab_read() function opens a file, but doesn't close it after use.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/lstab.c b/lstab.c
+index e6e7ad2..0d6a427 100644
+--- a/lstab.c
++++ b/lstab.c
+@@ -144,6 +144,7 @@ static int lstab_read(struct lstab *lstab, const char *name)
+ 			index++;
+ 		}
+ 	}
++	fclose(fp);
+ 	if (!lstab->expiration_utc) {
+ 		fprintf(stderr, "missing expiration date in '%s'\n", name);
+ 		return -1;

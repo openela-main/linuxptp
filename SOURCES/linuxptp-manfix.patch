@@ -1,0 +1,28 @@
+commit 0b80e32829ca7430be851fc64c4812896ad97c88
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jul 19 17:09:01 2021 +0200
+
+    Fix quoting in ptp4l man page.
+    
+    In the groff syntax lines starting with a dot or quote are requests. A
+    line in the servo_offset_threshold description starts with a quote,
+    which breaks the output. Move a word to the beginning of the line to fix
+    it.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/ptp4l.8 b/ptp4l.8
+index 7ca3474..a0779ef 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -788,8 +788,8 @@ The default value is 10.
+ .TP
+ .B servo_offset_threshold
+ The offset threshold used in order to transition from the SERVO_LOCKED
+-to the SERVO_LOCKED_STABLE state.  The transition occurs once the last
+-'servo_num_offset_values' offsets are all below the threshold value.
++to the SERVO_LOCKED_STABLE state.  The transition occurs once the
++last 'servo_num_offset_values' offsets are all below the threshold value.
+ The default value of offset_threshold is 0 (disabled).
+ .TP
+ .B slave_event_monitor
