@@ -1,0 +1,45 @@
+commit a36602f1e65cd6bace6ed9405b0ce359de4a27d1
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 3 15:23:54 2019 +0100
+
+    unicast: limit message rate and grant duration
+    
+    Deny service requests with logInterMessagePeriod smaller than -7 (128
+    packets per second) or larger than 16. This limits the network and CPU
+    consumption per address and prevents undefined shifts in the calculation
+    of the interval.
+    
+    Also, limit the maximum grant duration to one hour.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/unicast_service.c b/unicast_service.c
+index 9c9b95b..c6c17c6 100644
+--- a/unicast_service.c
++++ b/unicast_service.c
+@@ -31,6 +31,9 @@
+ #include "unicast_service.h"
+ #include "util.h"
+ 
++#define MIN_LOG_INTER_MESSAGE_PERIOD -7
++#define MAX_LOG_INTER_MESSAGE_PERIOD 16
++#define MAX_DURATION 3600
+ #define QUEUE_LEN 16
+ 
+ struct unicast_client_address {
+@@ -289,6 +292,15 @@ int unicast_service_add(struct port *p, struct ptp_message *m,
+ 		return SERVICE_DENIED;
+ 	}
+ 
++	if (req->logInterMessagePeriod < MIN_LOG_INTER_MESSAGE_PERIOD ||
++	    req->logInterMessagePeriod > MAX_LOG_INTER_MESSAGE_PERIOD) {
++		return SERVICE_DENIED;
++	}
++
++	if (req->durationField > MAX_DURATION) {
++		req->durationField = MAX_DURATION;
++	}
++
+ 	LIST_FOREACH(itmp, &p->unicast_service->intervals, list) {
+ 		/*
+ 		 * Remember the interval of interest.

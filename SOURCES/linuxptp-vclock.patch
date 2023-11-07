@@ -1,0 +1,1538 @@
+Patches backported from the upstream repository.
+
+commit 6d2e07353d042b845da60dc6e3a20a71932678d0
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:46:58 2022 +0100
+
+    rtnl: Fix rtnl_rtattr_parse() to process max attribute.
+    
+    Initialize the whole array passed to rtnl_rtattr_parse() and don't
+    ignore the last attribute with the maximum value. This will be needed to
+    get the ETHTOOL_A_PHC_VCLOCKS_INDEX attribute.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Acked-by: Hangbin Liu <liuhangbin@gmail.com>
+
+diff --git a/rtnl.c b/rtnl.c
+index b7a2667..b02e07d 100644
+--- a/rtnl.c
++++ b/rtnl.c
+@@ -178,10 +178,10 @@ static int rtnl_rtattr_parse(struct rtattr *tb[], int max, struct rtattr *rta, i
+ {
+ 	unsigned short type;
+ 
+-	memset(tb, 0, sizeof(struct rtattr *) * max);
++	memset(tb, 0, sizeof(struct rtattr *) * (max + 1));
+ 	while (RTA_OK(rta, len)) {
+ 		type = rta->rta_type;
+-		if ((type < max) && (!tb[type]))
++		if ((type <= max) && (!tb[type]))
+ 			tb[type] = rta;
+ 		rta = RTA_NEXT(rta, len);
+ 	}
+@@ -200,8 +200,8 @@ static inline int rtnl_nested_rtattr_parse(struct rtattr *tb[], int max, struct
+ 
+ static int rtnl_linkinfo_parse(int master_index, struct rtattr *rta)
+ {
+-	struct rtattr *linkinfo[IFLA_INFO_MAX];
+-	struct rtattr *bond[IFLA_BOND_MAX];
++	struct rtattr *linkinfo[IFLA_INFO_MAX+1];
++	struct rtattr *bond[IFLA_BOND_MAX+1];
+ 	int index = -1;
+ 	char *kind;
+ 
+commit 8c557a7c7e5eebc6f0d7e1de44c53791fba265c1
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:46:59 2022 +0100
+
+    rtnl: Add function to detect virtual clocks.
+    
+    Add a function using ethtool netlink to check whether a PHC is a virtual
+    clock of an interface.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Acked-by: Hangbin Liu <liuhangbin@gmail.com>
+
+diff --git a/incdefs.sh b/incdefs.sh
+index 19e620e..21333e5 100755
+--- a/incdefs.sh
++++ b/incdefs.sh
+@@ -86,6 +86,10 @@ kernel_flags()
+ 	if grep -q HWTSTAMP_TX_ONESTEP_P2P ${prefix}${tstamp}; then
+ 		printf " -DHAVE_ONESTEP_P2P"
+ 	fi
++
++	if grep -q SOF_TIMESTAMPING_BIND_PHC ${prefix}${tstamp}; then
++		printf " -DHAVE_VCLOCKS"
++	fi
+ }
+ 
+ flags="$(user_flags)$(kernel_flags)"
+diff --git a/missing.h b/missing.h
+index 35eaf15..3df7bd1 100644
+--- a/missing.h
++++ b/missing.h
+@@ -251,6 +251,107 @@ enum {
+ #define NLA_TYPE_MAX (__NLA_TYPE_MAX - 1)
+ #endif /*NLA_TYPE_MAX*/
+ 
++#ifndef ETHTOOL_GENL_NAME
++#define ETHTOOL_GENL_NAME "ethtool"
++#define ETHTOOL_GENL_VERSION 1
++#endif
++
++#ifndef HAVE_VCLOCKS
++enum {
++	ETHTOOL_MSG_USER_NONE,
++	ETHTOOL_MSG_STRSET_GET,
++	ETHTOOL_MSG_LINKINFO_GET,
++	ETHTOOL_MSG_LINKINFO_SET,
++	ETHTOOL_MSG_LINKMODES_GET,
++	ETHTOOL_MSG_LINKMODES_SET,
++	ETHTOOL_MSG_LINKSTATE_GET,
++	ETHTOOL_MSG_DEBUG_GET,
++	ETHTOOL_MSG_DEBUG_SET,
++	ETHTOOL_MSG_WOL_GET,
++	ETHTOOL_MSG_WOL_SET,
++	ETHTOOL_MSG_FEATURES_GET,
++	ETHTOOL_MSG_FEATURES_SET,
++	ETHTOOL_MSG_PRIVFLAGS_GET,
++	ETHTOOL_MSG_PRIVFLAGS_SET,
++	ETHTOOL_MSG_RINGS_GET,
++	ETHTOOL_MSG_RINGS_SET,
++	ETHTOOL_MSG_CHANNELS_GET,
++	ETHTOOL_MSG_CHANNELS_SET,
++	ETHTOOL_MSG_COALESCE_GET,
++	ETHTOOL_MSG_COALESCE_SET,
++	ETHTOOL_MSG_PAUSE_GET,
++	ETHTOOL_MSG_PAUSE_SET,
++	ETHTOOL_MSG_EEE_GET,
++	ETHTOOL_MSG_EEE_SET,
++	ETHTOOL_MSG_TSINFO_GET,
++	ETHTOOL_MSG_CABLE_TEST_ACT,
++	ETHTOOL_MSG_CABLE_TEST_TDR_ACT,
++	ETHTOOL_MSG_TUNNEL_INFO_GET,
++	ETHTOOL_MSG_FEC_GET,
++	ETHTOOL_MSG_FEC_SET,
++	ETHTOOL_MSG_MODULE_EEPROM_GET,
++	ETHTOOL_MSG_STATS_GET,
++	ETHTOOL_MSG_PHC_VCLOCKS_GET,
++};
++
++enum {
++	ETHTOOL_MSG_KERNEL_NONE,
++	ETHTOOL_MSG_STRSET_GET_REPLY,
++	ETHTOOL_MSG_LINKINFO_GET_REPLY,
++	ETHTOOL_MSG_LINKINFO_NTF,
++	ETHTOOL_MSG_LINKMODES_GET_REPLY,
++	ETHTOOL_MSG_LINKMODES_NTF,
++	ETHTOOL_MSG_LINKSTATE_GET_REPLY,
++	ETHTOOL_MSG_DEBUG_GET_REPLY,
++	ETHTOOL_MSG_DEBUG_NTF,
++	ETHTOOL_MSG_WOL_GET_REPLY,
++	ETHTOOL_MSG_WOL_NTF,
++	ETHTOOL_MSG_FEATURES_GET_REPLY,
++	ETHTOOL_MSG_FEATURES_SET_REPLY,
++	ETHTOOL_MSG_FEATURES_NTF,
++	ETHTOOL_MSG_PRIVFLAGS_GET_REPLY,
++	ETHTOOL_MSG_PRIVFLAGS_NTF,
++	ETHTOOL_MSG_RINGS_GET_REPLY,
++	ETHTOOL_MSG_RINGS_NTF,
++	ETHTOOL_MSG_CHANNELS_GET_REPLY,
++	ETHTOOL_MSG_CHANNELS_NTF,
++	ETHTOOL_MSG_COALESCE_GET_REPLY,
++	ETHTOOL_MSG_COALESCE_NTF,
++	ETHTOOL_MSG_PAUSE_GET_REPLY,
++	ETHTOOL_MSG_PAUSE_NTF,
++	ETHTOOL_MSG_EEE_GET_REPLY,
++	ETHTOOL_MSG_EEE_NTF,
++	ETHTOOL_MSG_TSINFO_GET_REPLY,
++	ETHTOOL_MSG_CABLE_TEST_NTF,
++	ETHTOOL_MSG_CABLE_TEST_TDR_NTF,
++	ETHTOOL_MSG_TUNNEL_INFO_GET_REPLY,
++	ETHTOOL_MSG_FEC_GET_REPLY,
++	ETHTOOL_MSG_FEC_NTF,
++	ETHTOOL_MSG_MODULE_EEPROM_GET_REPLY,
++	ETHTOOL_MSG_STATS_GET_REPLY,
++	ETHTOOL_MSG_PHC_VCLOCKS_GET_REPLY,
++};
++
++enum {
++	ETHTOOL_A_HEADER_UNSPEC,
++	ETHTOOL_A_HEADER_DEV_INDEX,		/* u32 */
++	ETHTOOL_A_HEADER_DEV_NAME,		/* string */
++	ETHTOOL_A_HEADER_FLAGS,			/* u32 - ETHTOOL_FLAG_* */
++	__ETHTOOL_A_HEADER_CNT,
++	ETHTOOL_A_HEADER_MAX = __ETHTOOL_A_HEADER_CNT - 1
++};
++
++enum {
++	ETHTOOL_A_PHC_VCLOCKS_UNSPEC,
++	ETHTOOL_A_PHC_VCLOCKS_HEADER,			/* nest - _A_HEADER_* */
++	ETHTOOL_A_PHC_VCLOCKS_NUM,			/* u32 */
++	ETHTOOL_A_PHC_VCLOCKS_INDEX,			/* array, s32 */
++	__ETHTOOL_A_PHC_VCLOCKS_CNT,
++	ETHTOOL_A_PHC_VCLOCKS_MAX = (__ETHTOOL_A_PHC_VCLOCKS_CNT - 1)
++};
++
++#endif /* HAVE_VCLOCKS */
++
+ #ifdef __UCLIBC__
+ 
+ #if (_XOPEN_SOURCE >= 600 || _POSIX_C_SOURCE >= 200112L) && \
+diff --git a/rtnl.c b/rtnl.c
+index b02e07d..a8999b2 100644
+--- a/rtnl.c
++++ b/rtnl.c
+@@ -19,6 +19,9 @@
+ #include <asm/types.h>
+ #include <sys/socket.h> /* Must come before linux/netlink.h on some systems. */
+ #include <linux/netlink.h>
++#ifdef HAVE_VCLOCKS
++#include <linux/ethtool_netlink.h>
++#endif
+ #include <linux/rtnetlink.h>
+ #include <linux/genetlink.h>
+ #include <linux/if_team.h>
+@@ -465,3 +468,85 @@ no_info:
+ 	nl_close(fd);
+ 	return index;
+ }
++
++static int rtnl_search_vclocks(struct rtattr *attr, int phc_index)
++{
++	int i, len = RTA_PAYLOAD(attr);
++
++	for (i = 0; i < len / sizeof (__s32); i++) {
++		if (((__s32 *)RTA_DATA(attr))[i] == phc_index)
++			return 1;
++	}
++
++	return 0;
++}
++
++int rtnl_iface_has_vclock(const char *device, int phc_index)
++{
++	struct rtattr *tb[ETHTOOL_A_PHC_VCLOCKS_MAX + 1];
++	int index, fd, gf_id, len, ret = 0;
++	struct genlmsghdr *gnlh;
++	struct nlmsghdr *nlh;
++	char msg[BUF_SIZE];
++	struct {
++		struct nlattr attr;
++		uint32_t index;
++	} req;
++
++	index = if_nametoindex(device);
++
++	fd = nl_open(NETLINK_GENERIC);
++	if (fd < 0)
++		return 0;
++
++	gf_id = genl_get_family_id(fd, ETHTOOL_GENL_NAME);
++	if (gf_id < 0) {
++		pr_debug("ethtool netlink not supported");
++		goto no_info;
++	}
++
++	req.attr.nla_len = sizeof(req);
++	req.attr.nla_type = ETHTOOL_A_HEADER_DEV_INDEX;
++	req.index = index;
++
++	len = genl_send_msg(fd, gf_id, ETHTOOL_MSG_PHC_VCLOCKS_GET,
++			    ETHTOOL_GENL_VERSION,
++			    NLA_F_NESTED | ETHTOOL_A_PHC_VCLOCKS_HEADER, 
++			    &req, sizeof(req));
++
++	if (len < 0) {
++		pr_err("send vclock request failed: %m");
++		goto no_info;
++	}
++
++	len = recv(fd, msg, sizeof(msg), 0);
++	if (len < 0) {
++		pr_err("recv vclock failed: %m");
++		goto no_info;
++	}
++
++	for (nlh = (struct nlmsghdr *) msg; NLMSG_OK(nlh, len);
++	     nlh = NLMSG_NEXT(nlh, len)) {
++		if (nlh->nlmsg_type != gf_id)
++			continue;
++
++		gnlh = (struct genlmsghdr *) NLMSG_DATA(nlh);
++		if (gnlh->cmd != ETHTOOL_MSG_PHC_VCLOCKS_GET_REPLY)
++			continue;
++
++		if (rtnl_rtattr_parse(tb, ETHTOOL_A_PHC_VCLOCKS_MAX,
++				      (struct rtattr *) GENLMSG_DATA(msg),
++				      NLMSG_PAYLOAD(nlh, GENL_HDRLEN)))
++			continue;
++
++		if (tb[ETHTOOL_A_PHC_VCLOCKS_INDEX]) {
++			ret = rtnl_search_vclocks(tb[ETHTOOL_A_PHC_VCLOCKS_INDEX],
++						  phc_index);
++			break;
++		}
++	}
++
++no_info:
++	nl_close(fd);
++	return ret;
++}
+diff --git a/rtnl.h b/rtnl.h
+index 8fef4a9..96fee29 100644
+--- a/rtnl.h
++++ b/rtnl.h
+@@ -59,6 +59,15 @@ int rtnl_link_query(int fd, const char *device);
+  */
+ int rtnl_link_status(int fd, const char *device, rtnl_callback cb, void *ctx);
+ 
++/**
++ * Check if the PHC is a virtual clock of the interface (i.e. sockets bound to
++ * the interface also need to be bound to the clock).
++ * @param device    Name of the interface.
++ * @param phc_index Index of the clock to check.
++ * @return          1 if true, otherwise 0.
++ */
++int rtnl_iface_has_vclock(const char *device, int phc_index);
++
+ /**
+  * Open a RT netlink socket for monitoring link state.
+  * @return    A valid socket, or -1 on error.
+commit 5477078bf5c9ef050c3bcb037f856b693f1247e7
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:00 2022 +0100
+
+    Add support for binding sockets to virtual clocks.
+    
+    With the latest kernels it is possible to create virtual PHCs on top of
+    a free-running physical PHC. In order for the application to get
+    timestamps captured by the clock which it is controlling, it needs to
+    bind its sockets to the clock using a new field in the SO_TIMESTAMPING
+    option.
+    
+    Extend the interface structure with the vclock index and modify the
+    transport code to pass it to sk_timestamping_init() to bind the sockets
+    to the clock.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/interface.c b/interface.c
+index 65bdff0..445a270 100644
+--- a/interface.c
++++ b/interface.c
+@@ -12,6 +12,7 @@ struct interface {
+ 	char name[MAX_IFNAME_SIZE + 1];
+ 	char ts_label[MAX_IFNAME_SIZE + 1];
+ 	struct sk_ts_info ts_info;
++	int vclock;
+ };
+ 
+ struct interface *interface_create(const char *name)
+@@ -23,6 +24,7 @@ struct interface *interface_create(const char *name)
+ 		return NULL;
+ 	}
+ 	strncpy(iface->name, name, MAX_IFNAME_SIZE);
++	iface->vclock = -1;
+ 
+ 	return iface;
+ }
+@@ -76,3 +78,13 @@ bool interface_tsmodes_supported(struct interface *iface, int modes)
+ 	}
+ 	return false;
+ }
++
++void interface_set_vclock(struct interface *iface, int vclock)
++{
++	iface->vclock = vclock;
++}
++
++int interface_get_vclock(struct interface *iface)
++{
++	return iface->vclock;
++}
+diff --git a/interface.h b/interface.h
+index 8bf2727..752f4f1 100644
+--- a/interface.h
++++ b/interface.h
+@@ -91,4 +91,18 @@ bool interface_tsinfo_valid(struct interface *iface);
+  */
+ bool interface_tsmodes_supported(struct interface *iface, int modes);
+ 
++/**
++ * Set the vclock (virtual PHC) to be used for timestamping on an interface.
++ * @param iface  The interface of interest.
++ * @param vclock The index of the vclock.
++ */
++void interface_set_vclock(struct interface *iface, int vclock);
++
++/**
++ * Get the vclock index set for the interface.
++ * @param iface  The interface of interest.
++ * @return       The index of the vclock, or -1 if not set.
++ */
++int interface_get_vclock(struct interface *iface);
++
+ #endif
+diff --git a/missing.h b/missing.h
+index 3df7bd1..c5194f4 100644
+--- a/missing.h
++++ b/missing.h
+@@ -62,6 +62,17 @@ enum {
+ };
+ #endif
+ 
++#ifndef HAVE_VCLOCKS
++enum {
++	SOF_TIMESTAMPING_BIND_PHC = (1 << 15),
++};
++
++struct so_timestamping {
++	int flags;
++	int bind_phc;
++};
++#endif
++
+ #ifdef PTP_EXTTS_REQUEST2
+ #define PTP_EXTTS_REQUEST_FAILED "PTP_EXTTS_REQUEST2 failed: %m"
+ #else
+diff --git a/raw.c b/raw.c
+index 0bd15b0..ce64684 100644
+--- a/raw.c
++++ b/raw.c
+@@ -243,7 +243,8 @@ static int raw_open(struct transport *t, struct interface *iface,
+ 	if (gfd < 0)
+ 		goto no_general;
+ 
+-	if (sk_timestamping_init(efd, name, ts_type, TRANS_IEEE_802_3))
++	if (sk_timestamping_init(efd, name, ts_type, TRANS_IEEE_802_3,
++				 interface_get_vclock(iface)))
+ 		goto no_timestamping;
+ 
+ 	if (sk_general_init(gfd))
+diff --git a/sk.c b/sk.c
+index 8be0708..b55d6b5 100644
+--- a/sk.c
++++ b/sk.c
+@@ -447,9 +447,10 @@ int sk_set_priority(int fd, int family, uint8_t dscp)
+ }
+ 
+ int sk_timestamping_init(int fd, const char *device, enum timestamp_type type,
+-			 enum transport_type transport)
++			 enum transport_type transport, int vclock)
+ {
+ 	int err, filter1, filter2 = 0, flags, tx_type = HWTSTAMP_TX_ON;
++	struct so_timestamping timestamping;
+ 
+ 	switch (type) {
+ 	case TS_SOFTWARE:
+@@ -509,8 +510,14 @@ int sk_timestamping_init(int fd, const char *device, enum timestamp_type type,
+ 			return err;
+ 	}
+ 
++	if (vclock >= 0)
++		flags |= SOF_TIMESTAMPING_BIND_PHC;
++
++	timestamping.flags = flags;
++	timestamping.bind_phc = vclock;
++
+ 	if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING,
+-		       &flags, sizeof(flags)) < 0) {
++		       &timestamping, sizeof(timestamping)) < 0) {
+ 		pr_err("ioctl SO_TIMESTAMPING failed: %m");
+ 		return -1;
+ 	}
+diff --git a/sk.h b/sk.h
+index 04d26ee..486dbc4 100644
+--- a/sk.h
++++ b/sk.h
+@@ -124,10 +124,11 @@ int sk_set_priority(int fd, int family, uint8_t dscp);
+  * @param device      The name of the network interface to configure.
+  * @param type        The requested flavor of time stamping.
+  * @param transport   The type of transport used.
++ * @param vclock      Index of the virtual PHC, or -1 for the physical clock.
+  * @return            Zero on success, non-zero otherwise.
+  */
+ int sk_timestamping_init(int fd, const char *device, enum timestamp_type type,
+-			 enum transport_type transport);
++			 enum transport_type transport, int vclock);
+ 
+ /**
+  * Limits the time that RECVMSG(2) will poll while waiting for the tx timestamp
+diff --git a/udp.c b/udp.c
+index 826bd12..7c9402e 100644
+--- a/udp.c
++++ b/udp.c
+@@ -179,7 +179,8 @@ static int udp_open(struct transport *t, struct interface *iface,
+ 	if (gfd < 0)
+ 		goto no_general;
+ 
+-	if (sk_timestamping_init(efd, interface_label(iface), ts_type, TRANS_UDP_IPV4))
++	if (sk_timestamping_init(efd, interface_label(iface), ts_type, TRANS_UDP_IPV4,
++				 interface_get_vclock(iface)))
+ 		goto no_timestamping;
+ 
+ 	if (sk_general_init(gfd))
+diff --git a/udp6.c b/udp6.c
+index ba5482e..bde1710 100644
+--- a/udp6.c
++++ b/udp6.c
+@@ -196,7 +196,8 @@ static int udp6_open(struct transport *t, struct interface *iface,
+ 	if (gfd < 0)
+ 		goto no_general;
+ 
+-	if (sk_timestamping_init(efd, interface_label(iface), ts_type, TRANS_UDP_IPV6))
++	if (sk_timestamping_init(efd, interface_label(iface), ts_type,
++				 TRANS_UDP_IPV6, interface_get_vclock(iface)))
+ 		goto no_timestamping;
+ 
+ 	if (sk_general_init(gfd))
+commit daaaff6b553290cf09284b0cc7756b9e24358ace
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:01 2022 +0100
+
+    config: Add port-specific phc_index option.
+    
+    Allow the PHC index to be configured for each port. The default value is
+    -1, which enables the original behavior using the PHC specified by -p or
+    the index from ETHTOOL_GET_TS_INFO.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 49bd4a9..67b3372 100644
+--- a/clock.c
++++ b/clock.c
+@@ -900,7 +900,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 	char ts_label[IF_NAMESIZE], phc[32], *tmp;
+ 	enum timestamp_type timestamping;
+ 	int fadj = 0, max_adj = 0, sw_ts;
+-	int phc_index, required_modes = 0;
++	int phc_index, conf_phc_index, required_modes = 0;
+ 	struct clock *c = &the_clock;
+ 	const char *uds_ifname;
+ 	struct port *p;
+@@ -1018,6 +1018,8 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 
+ 	iface = STAILQ_FIRST(&config->interfaces);
+ 
++	conf_phc_index = config_get_int(config, interface_name(iface), "phc_index");
++
+ 	/* determine PHC Clock index */
+ 	if (config_get_int(config, NULL, "free_running")) {
+ 		phc_index = -1;
+@@ -1027,6 +1029,8 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 		if (1 != sscanf(phc_device, "/dev/ptp%d", &phc_index)) {
+ 			phc_index = -1;
+ 		}
++	} else if (conf_phc_index >= 0) {
++		phc_index = conf_phc_index;
+ 	} else if (interface_tsinfo_valid(iface)) {
+ 		phc_index = interface_phc_index(iface);
+ 	} else {
+diff --git a/config.c b/config.c
+index ef5e833..0613eda 100644
+--- a/config.c
++++ b/config.c
+@@ -282,6 +282,7 @@ struct config_item config_tab[] = {
+ 	PORT_ITEM_INT("operLogPdelayReqInterval", 0, INT8_MIN, INT8_MAX),
+ 	PORT_ITEM_INT("operLogSyncInterval", 0, INT8_MIN, INT8_MAX),
+ 	PORT_ITEM_INT("path_trace_enabled", 0, 0, 1),
++	PORT_ITEM_INT("phc_index", -1, -1, INT_MAX),
+ 	GLOB_ITEM_DBL("pi_integral_const", 0.0, 0.0, DBL_MAX),
+ 	GLOB_ITEM_DBL("pi_integral_exponent", 0.4, -DBL_MAX, DBL_MAX),
+ 	GLOB_ITEM_DBL("pi_integral_norm_max", 0.3, DBL_MIN, 2.0),
+diff --git a/configs/default.cfg b/configs/default.cfg
+index 8c19129..45888d5 100644
+--- a/configs/default.cfg
++++ b/configs/default.cfg
+@@ -103,6 +103,7 @@ delay_filter_length	10
+ egressLatency		0
+ ingressLatency		0
+ boundary_clock_jbod	0
++phc_index		-1
+ #
+ # Clock description
+ #
+diff --git a/port.c b/port.c
+index d26b87f..7912ee6 100644
+--- a/port.c
++++ b/port.c
+@@ -3057,7 +3057,9 @@ struct port *port_open(const char *phc_device,
+ 		goto err_port;
+ 	}
+ 
+-	p->phc_index = phc_index;
++	p->phc_index = config_get_int(cfg, interface_name(interface), "phc_index");
++	if (p->phc_index < 0)
++		p->phc_index = phc_index;
+ 	p->jbod = config_get_int(cfg, interface_name(interface), "boundary_clock_jbod");
+ 	transport = config_get_int(cfg, interface_name(interface), "network_transport");
+ 	p->master_only = config_get_int(cfg, interface_name(interface), "masterOnly");
+@@ -3080,8 +3082,8 @@ struct port *port_open(const char *phc_device,
+ 		; /* UDS cannot have a PHC. */
+ 	} else if (!interface_tsinfo_valid(interface)) {
+ 		pr_warning("port %d: get_ts_info not supported", number);
+-	} else if (phc_index >= 0 &&
+-		   phc_index != interface_phc_index(interface)) {
++	} else if (p->phc_index >= 0 &&
++		   p->phc_index != interface_phc_index(interface)) {
+ 		if (p->jbod) {
+ 			pr_warning("port %d: just a bunch of devices", number);
+ 			p->phc_index = interface_phc_index(interface);
+diff --git a/ptp4l.8 b/ptp4l.8
+index b179b81..fc73e84 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -365,6 +365,11 @@ collection of clocks must be synchronized by an external program, for
+ example phc2sys(8) in "automatic" mode.
+ The default is 0 (disabled).
+ .TP
++.B phc_index
++Specifies the index of the PHC to be used for synchronization with hardware
++timestamping. The default is -1, which means the index will be set to the PHC
++associated with the interface, or the device specified by the \fB-p\fP option.
++.TP
+ .B udp_ttl
+ Specifies the Time to live (TTL) value for IPv4 multicast messages and the hop
+ limit for IPv6 multicast messages. This option is only relevant with the IPv4
+commit bb50991e8b9ecbcea53abbd0164a51e3e0bfe246
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:02 2022 +0100
+
+    port: Check for virtual clocks.
+    
+    If the PHC specified with the phc_index or -p option is a virtual clock
+    of the interface, bind sockets to the virtual clock instead of the real
+    clock to get correct timestamps.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index 7912ee6..b4dcd1b 100644
+--- a/port.c
++++ b/port.c
+@@ -3084,7 +3084,12 @@ struct port *port_open(const char *phc_device,
+ 		pr_warning("port %d: get_ts_info not supported", number);
+ 	} else if (p->phc_index >= 0 &&
+ 		   p->phc_index != interface_phc_index(interface)) {
+-		if (p->jbod) {
++		if (rtnl_iface_has_vclock(interface_name(interface),
++					  p->phc_index)) {
++			pr_info("port %d: /dev/ptp%d is virtual clock",
++				number, p->phc_index);
++			interface_set_vclock(interface, p->phc_index);
++		} else if (p->jbod) {
+ 			pr_warning("port %d: just a bunch of devices", number);
+ 			p->phc_index = interface_phc_index(interface);
+ 		} else if (phc_device) {
+diff --git a/ptp4l.8 b/ptp4l.8
+index fc73e84..d0446d5 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -367,8 +367,11 @@ The default is 0 (disabled).
+ .TP
+ .B phc_index
+ Specifies the index of the PHC to be used for synchronization with hardware
+-timestamping. The default is -1, which means the index will be set to the PHC
+-associated with the interface, or the device specified by the \fB-p\fP option.
++timestamping. This option is useful with virtual clocks running on top of a
++free-running physical clock (created by writing to
++/sys/class/ptp/ptp*/n_vclocks).
++The default is -1, which means the index will be set to the PHC associated with
++the interface, or the device specified by the \fB-p\fP option.
+ .TP
+ .B udp_ttl
+ Specifies the Time to live (TTL) value for IPv4 multicast messages and the hop
+commit 2b1657a65c0f3c880a0b9982401d419108560a1f
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:03 2022 +0100
+
+    tlv: Add PORT_HWCLOCK_NP.
+    
+    Add a new command to get the PHC index associated with the port. This
+    will be needed for phc2sys -a to use the correct PHC for synchronization
+    if ptp4l is using a virtual clock.
+    
+    The TLV also contains a flag indicating a virtual clock.
+    
+    To follow the PORT_PROPERTIES_NP access policy, PORT_HWCLOCK_NP is
+    limited to the UDS-RW port.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 67b3372..39df135 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1482,6 +1482,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 
+ 	switch (mgt->id) {
+ 	case TLV_PORT_PROPERTIES_NP:
++	case TLV_PORT_HWCLOCK_NP:
+ 		if (p != c->uds_rw_port) {
+ 			/* Only the UDS-RW port allowed. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+diff --git a/pmc.c b/pmc.c
+index 65d1d61..3832f0d 100644
+--- a/pmc.c
++++ b/pmc.c
+@@ -144,6 +144,7 @@ static void pmc_show(struct ptp_message *msg, FILE *fp)
+ 	struct subscribe_events_np *sen;
+ 	struct management_tlv_datum *mtd;
+ 	struct port_properties_np *ppn;
++	struct port_hwclock_np *phn;
+ 	struct timePropertiesDS *tp;
+ 	struct management_tlv *mgt;
+ 	struct time_status_np *tsn;
+@@ -487,6 +488,16 @@ static void pmc_show(struct ptp_message *msg, FILE *fp)
+ 			pcp->stats.txMsgType[SIGNALING],
+ 			pcp->stats.txMsgType[MANAGEMENT]);
+ 		break;
++	case TLV_PORT_HWCLOCK_NP:
++		phn = (struct port_hwclock_np *) mgt->data;
++		fprintf(fp, "PORT_HWCLOCK_NP "
++			IFMT "portIdentity            %s"
++			IFMT "phcIndex                %d"
++			IFMT "flags                   %hhu",
++			pid2str(&phn->portIdentity),
++			phn->phc_index,
++			phn->flags);
++		break;
+ 	case TLV_LOG_ANNOUNCE_INTERVAL:
+ 		mtd = (struct management_tlv_datum *) mgt->data;
+ 		fprintf(fp, "LOG_ANNOUNCE_INTERVAL "
+diff --git a/pmc_common.c b/pmc_common.c
+index f07f6f6..756edf5 100644
+--- a/pmc_common.c
++++ b/pmc_common.c
+@@ -132,6 +132,7 @@ struct management_id idtab[] = {
+ 	{ "PORT_DATA_SET_NP", TLV_PORT_DATA_SET_NP, do_set_action },
+ 	{ "PORT_STATS_NP", TLV_PORT_STATS_NP, do_get_action },
+ 	{ "PORT_PROPERTIES_NP", TLV_PORT_PROPERTIES_NP, do_get_action },
++	{ "PORT_HWCLOCK_NP", TLV_PORT_HWCLOCK_NP, do_get_action },
+ };
+ 
+ static void do_get_action(struct pmc *pmc, int action, int index, char *str)
+diff --git a/port.c b/port.c
+index b4dcd1b..e309b98 100644
+--- a/port.c
++++ b/port.c
+@@ -797,6 +797,7 @@ static int port_management_fill_response(struct port *target,
+ 	struct management_tlv_datum *mtd;
+ 	struct clock_description *desc;
+ 	struct port_properties_np *ppn;
++	struct port_hwclock_np *phn;
+ 	struct port_stats_np *psn;
+ 	struct management_tlv *tlv;
+ 	struct port_ds_np *pdsnp;
+@@ -961,6 +962,14 @@ static int port_management_fill_response(struct port *target,
+ 		psn->stats = target->stats;
+ 		datalen = sizeof(*psn);
+ 		break;
++	case TLV_PORT_HWCLOCK_NP:
++		phn = (struct port_hwclock_np *)tlv->data;
++		phn->portIdentity = target->portIdentity;
++		phn->phc_index = target->phc_index;
++		phn->flags = interface_get_vclock(target->iface) >= 0 ?
++			PORT_HWCLOCK_VCLOCK : 0;
++		datalen = sizeof(*phn);
++		break;
+ 	default:
+ 		/* The caller should *not* respond to this message. */
+ 		tlv_extra_recycle(extra);
+diff --git a/tlv.c b/tlv.c
+index 738e404..38aeb80 100644
+--- a/tlv.c
++++ b/tlv.c
+@@ -123,6 +123,7 @@ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
+ 	struct grandmaster_settings_np *gsn;
+ 	struct subscribe_events_np *sen;
+ 	struct port_properties_np *ppn;
++	struct port_hwclock_np *phn;
+ 	struct port_stats_np *psn;
+ 	struct mgmt_clock_description *cd;
+ 	int extra_len = 0, len;
+@@ -326,6 +327,14 @@ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
+ 			ntohs(psn->portIdentity.portNumber);
+ 		extra_len = sizeof(struct port_stats_np);
+ 		break;
++	case TLV_PORT_HWCLOCK_NP:
++		if (data_len < sizeof(struct port_hwclock_np))
++			goto bad_length;
++		phn = (struct port_hwclock_np *)m->data;
++		phn->portIdentity.portNumber = ntohs(phn->portIdentity.portNumber);
++		phn->phc_index = ntohl(phn->phc_index);
++		extra_len = sizeof(struct port_hwclock_np);
++		break;
+ 	case TLV_SAVE_IN_NON_VOLATILE_STORAGE:
+ 	case TLV_RESET_NON_VOLATILE_STORAGE:
+ 	case TLV_INITIALIZE:
+@@ -352,6 +361,7 @@ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
+ 	struct defaultDS *dds;
+ 	struct currentDS *cds;
+ 	struct parentDS *pds;
++	struct port_hwclock_np *phn;
+ 	struct timePropertiesDS *tp;
+ 	struct portDS *p;
+ 	struct port_ds_np *pdsnp;
+@@ -437,6 +447,11 @@ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
+ 		psn->portIdentity.portNumber =
+ 			htons(psn->portIdentity.portNumber);
+ 		break;
++	case TLV_PORT_HWCLOCK_NP:
++		phn = (struct port_hwclock_np *)m->data;
++		phn->portIdentity.portNumber = htons(phn->portIdentity.portNumber);
++		phn->phc_index = htonl(phn->phc_index);
++		break;
+ 	}
+ }
+ 
+diff --git a/tlv.h b/tlv.h
+index a205119..5ac3d7c 100644
+--- a/tlv.h
++++ b/tlv.h
+@@ -125,6 +125,7 @@ enum management_action {
+ #define TLV_PORT_DATA_SET_NP				0xC002
+ #define TLV_PORT_PROPERTIES_NP				0xC004
+ #define TLV_PORT_STATS_NP				0xC005
++#define TLV_PORT_HWCLOCK_NP				0xC009
+ 
+ /* Management error ID values */
+ #define TLV_RESPONSE_TOO_BIG				0x0001
+@@ -144,6 +145,9 @@ enum management_action {
+ #define CANCEL_UNICAST_MAINTAIN_GRANT	(1 << 1)
+ #define GRANT_UNICAST_RENEWAL_INVITED	(1 << 0)
+ 
++/* Flags in PORT_HWCLOCK_NP */
++#define PORT_HWCLOCK_VCLOCK		(1 << 0)
++
+ struct ack_cancel_unicast_xmit_tlv {
+ 	Enumeration16   type;
+ 	UInteger16      length;
+@@ -344,6 +348,12 @@ struct port_properties_np {
+ 	struct PTPText interface;
+ } PACKED;
+ 
++struct port_hwclock_np {
++	struct PortIdentity portIdentity;
++	Integer32 phc_index;
++	UInteger8 flags;
++} PACKED;
++
+ struct port_stats_np {
+ 	struct PortIdentity portIdentity;
+ 	struct PortStats stats;
+commit a64a45a0eedec82376fd9dab4d960b6fa652513e
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:04 2022 +0100
+
+    phc2sys: Use PHC index from PORT_HWCLOCK_NP.
+    
+    When running in the automatic mode, get the PHC index of the port
+    from PORT_HWCLOCK_NP instead of calling sk_get_ts_info(). This allows
+    phc2sys -a to synchronize (to) a virtual clock.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index a36cbe0..adbe37d 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -135,7 +135,8 @@ static void run_pmc_events(struct phc2sys_private *priv);
+ static int normalize_state(int state);
+ static int run_pmc_port_properties(struct phc2sys_private *priv,
+ 				   int timeout, unsigned int port,
+-				   int *state, int *tstamping, char *iface);
++				   int *state, int *tstamping, int *phc_index,
++				   char *iface);
+ 
+ static struct servo *servo_add(struct phc2sys_private *priv,
+ 			       struct clock *clock)
+@@ -172,14 +173,21 @@ static struct servo *servo_add(struct phc2sys_private *priv,
+ 	return servo;
+ }
+ 
+-static struct clock *clock_add(struct phc2sys_private *priv, char *device)
++static struct clock *clock_add(struct phc2sys_private *priv, char *device,
++			       int phc_index)
+ {
+ 	struct clock *c;
+ 	clockid_t clkid = CLOCK_INVALID;
+-	int phc_index = -1;
++	char phc_device[19];
+ 
+ 	if (device) {
+-		clkid = posix_clock_open(device, &phc_index);
++		if (phc_index >= 0) {
++			snprintf(phc_device, sizeof(phc_device), "/dev/ptp%d",
++				 phc_index);
++			clkid = posix_clock_open(phc_device, &phc_index);
++		} else {
++			clkid = posix_clock_open(device, &phc_index);
++		}
+ 		if (clkid == CLOCK_INVALID)
+ 			return NULL;
+ 	}
+@@ -279,7 +287,7 @@ static struct port *port_get(struct phc2sys_private *priv, unsigned int number)
+ }
+ 
+ static struct port *port_add(struct phc2sys_private *priv, unsigned int number,
+-			     char *device)
++			     char *device, int phc_index)
+ {
+ 	struct port *p;
+ 	struct clock *c = NULL, *tmp;
+@@ -296,7 +304,7 @@ static struct port *port_add(struct phc2sys_private *priv, unsigned int number,
+ 		}
+ 	}
+ 	if (!c) {
+-		c = clock_add(priv, device);
++		c = clock_add(priv, device, phc_index);
+ 		if (!c)
+ 			return NULL;
+ 	}
+@@ -316,17 +324,16 @@ static void clock_reinit(struct phc2sys_private *priv, struct clock *clock,
+ {
+ 	int phc_index = -1, phc_switched = 0;
+ 	int state, timestamping, ret = -1;
++	char iface[IFNAMSIZ], phc_device[19];
+ 	struct port *p;
+ 	struct servo *servo;
+-	struct sk_ts_info ts_info;
+-	char iface[IFNAMSIZ];
+ 	clockid_t clkid = CLOCK_INVALID;
+ 
+ 	LIST_FOREACH(p, &priv->ports, list) {
+ 		if (p->clock == clock) {
+ 			ret = run_pmc_port_properties(priv, 1000, p->number,
+ 					              &state, &timestamping,
+-						      iface);
++						      &phc_index, iface);
+ 			if (ret > 0)
+ 				p->state = normalize_state(state);
+ 		}
+@@ -339,9 +346,10 @@ static void clock_reinit(struct phc2sys_private *priv, struct clock *clock,
+ 			clock->device = strdup(iface);
+ 		}
+ 		/* Check if phc index changed */
+-		if (!sk_get_ts_info(clock->device, &ts_info) &&
+-		    clock->phc_index != ts_info.phc_index) {
+-			clkid = posix_clock_open(clock->device, &phc_index);
++		if (clock->phc_index != phc_index) {
++			snprintf(phc_device, sizeof(phc_device), "/dev/ptp%d",
++				 phc_index);
++			clkid = posix_clock_open(phc_device, &phc_index);
+ 			if (clkid == CLOCK_INVALID)
+ 				return;
+ 
+@@ -1099,11 +1107,13 @@ static void run_pmc_events(struct phc2sys_private *priv)
+ 
+ static int run_pmc_port_properties(struct phc2sys_private *priv, int timeout,
+ 				   unsigned int port,
+-				   int *state, int *tstamping, char *iface)
++				   int *state, int *tstamping, int *phc_index,
++				   char *iface)
+ {
+ 	struct ptp_message *msg;
+ 	int res, len;
+ 	struct port_properties_np *ppn;
++	struct port_hwclock_np *phn;
+ 
+ 	pmc_target_port(priv->pmc, port);
+ 	while (1) {
+@@ -1125,6 +1135,21 @@ static int run_pmc_port_properties(struct phc2sys_private *priv, int timeout,
+ 		memcpy(iface, ppn->interface.text, len);
+ 		iface[len] = '\0';
+ 
++		msg_put(msg);
++		break;
++	}
++	while (1) {
++		res = run_pmc(priv, timeout, TLV_PORT_HWCLOCK_NP, &msg);
++		if (res <= 0)
++			goto out;
++
++		phn = get_mgt_data(msg);
++		if (ppn->portIdentity.portNumber != port) {
++			msg_put(msg);
++			continue;
++		}
++		*phc_index = phn->phc_index;
++
+ 		msg_put(msg);
+ 		res = 1;
+ 		break;
+@@ -1164,7 +1189,7 @@ static int auto_init_ports(struct phc2sys_private *priv, int add_rt)
+ 	struct clock *clock;
+ 	int number_ports, res;
+ 	unsigned int i;
+-	int state, timestamping;
++	int state, timestamping, phc_index;
+ 	char iface[IFNAMSIZ];
+ 
+ 	while (1) {
+@@ -1193,7 +1218,7 @@ static int auto_init_ports(struct phc2sys_private *priv, int add_rt)
+ 
+ 	for (i = 1; i <= number_ports; i++) {
+ 		res = run_pmc_port_properties(priv, 1000, i, &state,
+-					      &timestamping, iface);
++					      &timestamping, &phc_index, iface);
+ 		if (res == -1) {
+ 			/* port does not exist, ignore the port */
+ 			continue;
+@@ -1206,7 +1231,7 @@ static int auto_init_ports(struct phc2sys_private *priv, int add_rt)
+ 			/* ignore ports with software time stamping */
+ 			continue;
+ 		}
+-		port = port_add(priv, i, iface);
++		port = port_add(priv, i, iface, phc_index);
+ 		if (!port)
+ 			return -1;
+ 		port->state = normalize_state(state);
+@@ -1221,7 +1246,7 @@ static int auto_init_ports(struct phc2sys_private *priv, int add_rt)
+ 	priv->state_changed = 1;
+ 
+ 	if (add_rt) {
+-		clock = clock_add(priv, "CLOCK_REALTIME");
++		clock = clock_add(priv, "CLOCK_REALTIME", -1);
+ 		if (!clock)
+ 			return -1;
+ 		if (add_rt == 1)
+@@ -1598,7 +1623,7 @@ int main(int argc, char *argv[])
+ 		goto end;
+ 	}
+ 
+-	src = clock_add(&priv, src_name);
++	src = clock_add(&priv, src_name, -1);
+ 	free(src_name);
+ 	if (!src) {
+ 		fprintf(stderr,
+@@ -1608,7 +1633,7 @@ int main(int argc, char *argv[])
+ 	src->state = PS_SLAVE;
+ 	priv.master = src;
+ 
+-	dst = clock_add(&priv, dst_name ? dst_name : "CLOCK_REALTIME");
++	dst = clock_add(&priv, dst_name ? dst_name : "CLOCK_REALTIME", -1);
+ 	free(dst_name);
+ 	if (!dst) {
+ 		fprintf(stderr,
+commit 3238beafd5aca017a29f335e94b1ff05f4596fe3
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 8 11:47:05 2022 +0100
+
+    timemaster: Add support for virtual clocks.
+    
+    Add "use_vclocks" option to enable synchronization with virtual clocks.
+    This enables multiple ptp4l instances sharing an interface to use
+    hardware timestamping. By default, vclocks are enabled if running on
+    Linux 5.18 or later, which should have all features to make them work as
+    well as physical clocks.
+    
+    When preparing the script, count how many vclocks are needed for each
+    physical clock. Add a placeholder option in the form of "--phc_index
+    %PHC0-0%" to the generated ptp4l commands that need hardware clock. The
+    index of the virtual clock is unknown at this point.
+    
+    When running the script (not just printing), create the required number
+    of virtual clocks by writing to /sys/.../n_vclocks and fix the
+    --phc_index options to refer to the indices of the created vclocks. On
+    exit, remove the virtual clocks to restore the original state.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/timemaster.8 b/timemaster.8
+index 2f92976..102768c 100644
+--- a/timemaster.8
++++ b/timemaster.8
+@@ -97,6 +97,15 @@ configuration error). If a process was terminated and is not started again,
+ \fBtimemaster\fR will kill the other processes and exit with a non-zero status.
+ The default value is 1 (enabled).
+ 
++.TP
++.B use_vclocks
++Enable or disable synchronization with virtual clocks. If enabled,
++\fBtimemaster\fR will create virtual clocks running on top of physical clocks
++needed by configured PTP domains. This enables hardware time stamping for
++multiple \fBptp4l\fR instances using the same network interface. The default
++value is -1, which enables the virtual clocks if running on Linux 5.18 or
++later.
++
+ .SS [ntp_server address]
+ 
+ The \fBntp_server\fR section specifies an NTP server that should be used as a
+@@ -140,8 +149,8 @@ Specify which network interfaces should be used for this PTP domain. A separate
+ \fBptp4l\fR instance will be started for each group of interfaces sharing the
+ same PHC and for each interface that supports only SW time stamping. HW time
+ stamping is enabled automatically. If an interface with HW time stamping is
+-specified also in other PTP domains, only the \fBptp4l\fR instance from the
+-first PTP domain will be using HW time stamping.
++specified also in other PTP domains and virtual clocks are disabled, only the
++\fBptp4l\fR instance from the first PTP domain will be using HW time stamping.
+ 
+ .TP
+ .B ntp_poll
+@@ -333,6 +342,7 @@ ntp_program chronyd
+ rundir /var/run/timemaster
+ first_shm_segment 1
+ restart_processes 0
++use_vclocks 0
+ 
+ [chronyd]
+ path /usr/sbin/chronyd
+diff --git a/timemaster.c b/timemaster.c
+index 02408d6..1fbadcb 100644
+--- a/timemaster.c
++++ b/timemaster.c
+@@ -20,6 +20,7 @@
+ 
+ #include <ctype.h>
+ #include <errno.h>
++#include <glob.h>
+ #include <libgen.h>
+ #include <limits.h>
+ #include <time.h>
+@@ -33,6 +34,7 @@
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <sys/utsname.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
+ 
+@@ -46,6 +48,7 @@
+ 
+ #define DEFAULT_FIRST_SHM_SEGMENT 0
+ #define DEFAULT_RESTART_PROCESSES 1
++#define DEFAULT_USE_VCLOCKS -1
+ 
+ #define DEFAULT_NTP_PROGRAM CHRONYD
+ #define DEFAULT_NTP_MINPOLL 6
+@@ -111,6 +114,7 @@ struct timemaster_config {
+ 	char *rundir;
+ 	int first_shm_segment;
+ 	int restart_processes;
++	int use_vclocks;
+ 	struct program_config chronyd;
+ 	struct program_config ntpd;
+ 	struct program_config phc2sys;
+@@ -122,7 +126,13 @@ struct config_file {
+ 	char *content;
+ };
+ 
++struct phc_vclocks {
++	int pclock_index;
++	int vclocks;
++};
++
+ struct script {
++	struct phc_vclocks **vclocks;
+ 	struct config_file **configs;
+ 	char ***commands;
+ 	int **command_groups;
+@@ -393,6 +403,8 @@ static int parse_timemaster_settings(char **settings,
+ 			r = parse_int(value, &config->first_shm_segment);
+ 		} else if (!strcasecmp(name, "restart_processes")) {
+ 			r = parse_int(value, &config->restart_processes);
++		} else if (!strcasecmp(name, "use_vclocks")) {
++			r = parse_int(value, &config->use_vclocks);
+ 		} else {
+ 			pr_err("unknown timemaster setting %s", name);
+ 			return 1;
+@@ -520,6 +532,20 @@ static void config_destroy(struct timemaster_config *config)
+ 	free(config);
+ }
+ 
++static int check_kernel_version(int version, int patch)
++{
++	struct utsname uts;
++	int v, p;
++
++	if (uname(&uts) < 0)
++		return 1;
++	if (sscanf(uts.release, "%d.%d", &v, &p) < 2)
++		return 1;
++	if (version > v || (version == v && patch > p))
++		return 1;
++	return 0;
++}
++
+ static struct timemaster_config *config_parse(char *path)
+ {
+ 	struct timemaster_config *config = xcalloc(1, sizeof(*config));
+@@ -533,6 +559,7 @@ static struct timemaster_config *config_parse(char *path)
+ 	config->rundir = xstrdup(DEFAULT_RUNDIR);
+ 	config->first_shm_segment = DEFAULT_FIRST_SHM_SEGMENT;
+ 	config->restart_processes = DEFAULT_RESTART_PROCESSES;
++	config->use_vclocks = DEFAULT_USE_VCLOCKS;
+ 
+ 	init_program_config(&config->chronyd, "chronyd",
+ 			    NULL, DEFAULT_CHRONYD_SETTINGS, NULL);
+@@ -593,6 +620,9 @@ static struct timemaster_config *config_parse(char *path)
+ 
+ 	fclose(f);
+ 
++	if (config->use_vclocks < 0)
++		config->use_vclocks = !check_kernel_version(5, 18);
++
+ 	if (section_name)
+ 		free(section_name);
+ 	if (section_lines)
+@@ -608,7 +638,7 @@ static struct timemaster_config *config_parse(char *path)
+ 
+ static char **get_ptp4l_command(struct program_config *config,
+ 				struct config_file *file, char **interfaces,
+-				int hw_ts)
++				char *phc_index, int hw_ts)
+ {
+ 	char **command = (char **)parray_new();
+ 
+@@ -617,6 +647,9 @@ static char **get_ptp4l_command(struct program_config *config,
+ 	parray_extend((void ***)&command,
+ 		      xstrdup("-f"), xstrdup(file->path),
+ 		      xstrdup(hw_ts ? "-H" : "-S"), NULL);
++	if (phc_index && phc_index[0])
++		parray_extend((void ***)&command,
++			      xstrdup("--phc_index"), xstrdup(phc_index), NULL);
+ 
+ 	for (; *interfaces; interfaces++)
+ 		parray_extend((void ***)&command,
+@@ -706,6 +739,24 @@ static int add_ntp_source(struct ntp_server *source, char **ntp_config)
+ 	return 0;
+ }
+ 
++static int add_vclock(struct script *script, int pclock_index)
++{
++	struct phc_vclocks **vclocks, *v;
++
++	for (vclocks = script->vclocks; *vclocks; vclocks++) {
++		if ((*vclocks)->pclock_index != pclock_index)
++			continue;
++		return (*vclocks)->vclocks++;
++	}
++
++	v = xmalloc(sizeof(*v));
++	v->pclock_index = pclock_index;
++	v->vclocks = 1;
++	parray_append((void ***)&script->vclocks, v);
++
++	return 0;
++}
++
+ static int add_ptp_source(struct ptp_domain *source,
+ 			  struct timemaster_config *config, int *shm_segment,
+ 			  int *command_group, int ***allocated_phcs,
+@@ -713,7 +764,7 @@ static int add_ptp_source(struct ptp_domain *source,
+ {
+ 	struct config_file *config_file;
+ 	char **command, *uds_path, *uds_path2, **interfaces, *message_tag;
+-	char ts_interface[IF_NAMESIZE];
++	char ts_interface[IF_NAMESIZE], vclock_index[20];
+ 	int i, j, num_interfaces, *phc, *phcs, hw_ts, sw_ts;
+ 	struct sk_ts_info ts_info;
+ 
+@@ -801,10 +852,18 @@ static int add_ptp_source(struct ptp_domain *source,
+ 				}
+ 			}
+ 
+-			/* don't use this PHC in other sources */
+-			phc = xmalloc(sizeof(int));
+-			*phc = phcs[i];
+-			parray_append((void ***)allocated_phcs, phc);
++			if (config->use_vclocks) {
++				/* request new vclock for the PHC */
++				int vclock = add_vclock(script, phcs[i]);
++				snprintf(vclock_index, sizeof(vclock_index),
++					 "%%PHC%d-%d%%", phcs[i], vclock);
++			} else {
++				/* don't use this PHC in other sources */
++				phc = xmalloc(sizeof(int));
++				*phc = phcs[i];
++				parray_append((void ***)allocated_phcs, phc);
++				vclock_index[0] = '\0';
++			}
+ 		}
+ 
+ 		uds_path = string_newf("%s/ptp4l.%d.socket",
+@@ -842,7 +901,8 @@ static int add_ptp_source(struct ptp_domain *source,
+ 		if (phcs[i] >= 0) {
+ 			/* HW time stamping */
+ 			command = get_ptp4l_command(&config->ptp4l, config_file,
+-						    interfaces, 1);
++						    interfaces,
++						    vclock_index, 1);
+ 			add_command(command, *command_group, script);
+ 
+ 			command = get_phc2sys_command(&config->phc2sys,
+@@ -854,7 +914,7 @@ static int add_ptp_source(struct ptp_domain *source,
+ 		} else {
+ 			/* SW time stamping */
+ 			command = get_ptp4l_command(&config->ptp4l, config_file,
+-						    interfaces, 0);
++						    interfaces, NULL, 0);
+ 			add_command(command, (*command_group)++, script);
+ 
+ 			string_appendf(&config_file->content,
+@@ -943,6 +1003,11 @@ static void script_destroy(struct script *script)
+ 	char ***commands, **command;
+ 	int **groups;
+ 	struct config_file *config, **configs;
++	struct phc_vclocks **vclocks;
++
++	for (vclocks = script->vclocks; *vclocks; vclocks++)
++		free(*vclocks);
++	free(script->vclocks);
+ 
+ 	for (configs = script->configs; *configs; configs++) {
+ 		config = *configs;
+@@ -974,6 +1039,7 @@ static struct script *script_create(struct timemaster_config *config)
+ 	int **allocated_phcs = (int **)parray_new();
+ 	int ret = 0, shm_segment, command_group = 0;
+ 
++	script->vclocks = (struct phc_vclocks **)parray_new();
+ 	script->configs = (struct config_file **)parray_new();
+ 	script->commands = (char ***)parray_new();
+ 	script->command_groups = (int **)parray_new();
+@@ -1116,6 +1182,102 @@ static int remove_config_files(struct config_file **configs)
+ 	return 0;
+ }
+ 
++static int set_phc_n_vclocks(int phc_index, int n_vclocks)
++{
++	char path[PATH_MAX];
++	FILE *f;
++
++	snprintf(path, sizeof(path), "/sys/class/ptp/ptp%d/n_vclocks",
++		 phc_index);
++	f = fopen(path, "w");
++	if (!f) {
++		pr_err("failed to open %s: %m", path);
++		return 1;
++	}
++	fprintf(f, "%d\n", n_vclocks);
++	fclose(f);
++
++	return 0;
++}
++
++static int create_vclocks(struct phc_vclocks **phc_vclocks)
++{
++	struct phc_vclocks **vclocks;
++
++	for (vclocks = phc_vclocks; *vclocks; vclocks++) {
++		if (set_phc_n_vclocks((*vclocks)->pclock_index,
++				      (*vclocks)->vclocks))
++			return 1;
++	}
++
++	return 0;
++}
++
++static int remove_vclocks(struct phc_vclocks **phc_vclocks)
++{
++	struct phc_vclocks **vclocks;
++
++	for (vclocks = phc_vclocks; *vclocks; vclocks++) {
++		if (set_phc_n_vclocks((*vclocks)->pclock_index, 0))
++			return 1;
++	}
++
++	return 0;
++}
++
++static int get_vclock_index(int pindex, int vclock)
++{
++	char pattern[PATH_MAX], *s;
++	int n, vindex;
++	glob_t gl;
++
++	snprintf(pattern, sizeof(pattern), "/sys/class/ptp/ptp%d/ptp[0-9]*",
++		 pindex);
++
++	if (glob(pattern, 0, NULL, &gl)) {
++		pr_err("glob(%s) failed", pattern);
++		return -1;
++	}
++
++	if (vclock >= gl.gl_pathc ||
++	    !(s = strrchr(gl.gl_pathv[vclock], '/')) ||
++	    sscanf(s + 1, "ptp%d%n", &vindex, &n) != 1 ||
++	    n != strlen(s + 1)) {
++		pr_err("missing vclock %d:%d", pindex, vclock);
++		globfree(&gl);
++		return -1;
++	}
++
++	globfree(&gl);
++
++	return vindex;
++}
++
++static int translate_vclock_options(char ***commands)
++{
++	int n, pindex, vclock, vindex, blen;
++	char **command;
++
++	for (; *commands; commands++) {
++		for (command = *commands; *command; command++) {
++			if (sscanf(*command, "%%PHC%d-%d%%%n",
++				   &pindex, &vclock, &n) != 2 ||
++			    n != strlen(*command))
++				continue;
++			vindex = get_vclock_index(pindex, vclock);
++			if (vindex < 0)
++				return 1;
++
++			/* overwrite the string with the vclock PHC index */
++			blen = strlen(*command) + 1;
++			if (snprintf(*command, blen, "%d", vindex) >= blen)
++				return 1;
++		}
++	}
++
++	return 0;
++}
++
+ static int script_run(struct script *script)
+ {
+ 	struct timespec ts_start, ts_now;
+@@ -1135,6 +1297,12 @@ static int script_run(struct script *script)
+ 	if (create_config_files(script->configs))
+ 		return 1;
+ 
++	if (create_vclocks(script->vclocks))
++		return 1;
++
++	if (translate_vclock_options(script->commands))
++		return 1;
++
+ 	sigemptyset(&mask);
+ 	sigaddset(&mask, SIGCHLD);
+ 	sigaddset(&mask, SIGTERM);
+@@ -1278,6 +1446,9 @@ static int script_run(struct script *script)
+ 
+ 	free(pids);
+ 
++	if (remove_vclocks(script->vclocks))
++		return 1;
++
+ 	if (remove_config_files(script->configs))
+ 		return 1;
+ 
+@@ -1289,13 +1460,20 @@ static void script_print(struct script *script)
+ 	char ***commands, **command;
+ 	int **groups;
+ 	struct config_file *config, **configs;
++	struct phc_vclocks **vclocks;
+ 
+ 	for (configs = script->configs; *configs; configs++) {
+ 		config = *configs;
+ 		fprintf(stderr, "%s:\n\n%s\n", config->path, config->content);
+ 	}
+ 
+-	fprintf(stderr, "commands:\n\n");
++	fprintf(stderr, "virtual clocks:\n\n");
++	for (vclocks = script->vclocks; *vclocks; vclocks++) {
++		fprintf(stderr, "PHC%d: %d\n",
++			(*vclocks)->pclock_index, (*vclocks)->vclocks);
++	}
++
++	fprintf(stderr, "\ncommands:\n\n");
+ 	for (commands = script->commands, groups = script->command_groups;
+ 	     *commands; commands++, groups++) {
+ 		fprintf(stderr, "[%d] ", **groups);
+commit e09b9fda7435799afad45c96b56ac020e7f7b3d3
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Apr 28 14:23:57 2022 +0200
+
+    timemaster: Check for RH-specific kernel with vclock support.
+
+diff --git a/timemaster.8 b/timemaster.8
+index 102768c..edf5818 100644
+--- a/timemaster.8
++++ b/timemaster.8
+@@ -104,7 +104,7 @@ Enable or disable synchronization with virtual clocks. If enabled,
+ needed by configured PTP domains. This enables hardware time stamping for
+ multiple \fBptp4l\fR instances using the same network interface. The default
+ value is -1, which enables the virtual clocks if running on Linux 5.18 or
+-later.
++later, or the EL9-specific kernel-5.14.0-106 or later release.
+ 
+ .SS [ntp_server address]
+ 
+diff --git a/timemaster.c b/timemaster.c
+index 1fbadcb..287d77c 100644
+--- a/timemaster.c
++++ b/timemaster.c
+@@ -546,6 +546,23 @@ static int check_kernel_version(int version, int patch)
+ 	return 0;
+ }
+ 
++static int check_rh_kernel_version(const char *el, int version, int patch,
++				   int sub, int release)
++{
++	struct utsname uts;
++	int v, p, sp, r;
++
++	if (uname(&uts) < 0)
++		return 1;
++	if (!strstr(uts.release, el))
++		return 1;
++	if (sscanf(uts.release, "%d.%d.%d-%d", &v, &p, &sp, &r) < 4)
++		return 1;
++	if (version != v || patch != p || sub != sp || release > r)
++		return 1;
++	return 0;
++}
++
+ static struct timemaster_config *config_parse(char *path)
+ {
+ 	struct timemaster_config *config = xcalloc(1, sizeof(*config));
+@@ -621,7 +638,8 @@ static struct timemaster_config *config_parse(char *path)
+ 	fclose(f);
+ 
+ 	if (config->use_vclocks < 0)
+-		config->use_vclocks = !check_kernel_version(5, 18);
++		config->use_vclocks = !check_kernel_version(5, 18) ||
++			!check_rh_kernel_version(".el9.", 5, 14, 0, 106);
+ 
+ 	if (section_name)
+ 		free(section_name);
+commit 5f402a959959edc7248415a98581f3eaab3c9735
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jul 14 17:06:15 2022 +0200
+
+    port: Disable PHC switch with vclocks.
+    
+    With a virtual PHC, don't try to switch to the physical PHC after a
+    link-state change. JBOD and other multi-PHC configurations are not
+    supported with vclocks yet.
+    
+    Fixes: 9b9c2c58e6ed ("port: Check for virtual clocks.")
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index e309b98..70b6e60 100644
+--- a/port.c
++++ b/port.c
+@@ -2591,8 +2591,9 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 	    (p->link_status & LINK_STATE_CHANGED || p->link_status & TS_LABEL_CHANGED)) {
+ 		interface_get_tsinfo(p->iface);
+ 
+-		/* Only switch phc with HW time stamping mode */
++		/* Only switch a non-vclock PHC with HW time stamping. */
+ 		if (interface_tsinfo_valid(p->iface) &&
++		    interface_get_vclock(p->iface) < 0 &&
+ 		    interface_phc_index(p->iface) >= 0) {
+ 			required_modes = clock_required_modes(p->clock);
+ 			if (!interface_tsmodes_supported(p->iface, required_modes)) {
