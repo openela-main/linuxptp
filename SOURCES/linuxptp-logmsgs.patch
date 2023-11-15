@@ -1,0 +1,96 @@
+commit 3399fa15ae28610c1b288b573c4233a42c48f762
+Author: Amar Subramanyam via Linuxptp-devel <linuxptp-devel@lists.sourceforge.net>
+Date:   Wed May 26 12:24:06 2021 +0300
+
+    Log optimization for ptp4l in jbod and client only mode (clientOnly=1 and boundary_clock_jbod=1)
+    
+    The LISTENING port prints continuously
+    "selected best master clock 000000.0000.000003
+    updating UTC offset to 37"
+    
+    We limited the log such that now it prints only when there is a
+    change in the best-master clock.
+    
+    Signed-off-by: Amar Subramanyam <asubramanyam@altiostar.com>
+    Signed-off-by: Karthikkumar Valoor <kvaloor@altiostar.com>
+    Signed-off-by: Ramana Reddy <rreddy@altiostar.com>
+
+diff --git a/clock.c b/clock.c
+index e545a9b..d428ae2 100644
+--- a/clock.c
++++ b/clock.c
+@@ -705,7 +705,8 @@ static void clock_update_slave(struct clock *c)
+ 	if (c->tds.currentUtcOffset < c->utc_offset) {
+ 		pr_warning("running in a temporal vortex");
+ 	}
+-	if ((c->tds.flags & UTC_OFF_VALID && c->tds.flags & TIME_TRACEABLE) ||
++	if (((c->tds.flags & UTC_OFF_VALID && c->tds.flags & TIME_TRACEABLE) &&
++	    (c->tds.currentUtcOffset != c->utc_offset)) ||
+ 	    (c->tds.currentUtcOffset > c->utc_offset)) {
+ 		pr_info("updating UTC offset to %d", c->tds.currentUtcOffset);
+ 		c->utc_offset = c->tds.currentUtcOffset;
+@@ -1939,14 +1940,6 @@ static void handle_state_decision_event(struct clock *c)
+ 		best_id = c->dds.clockIdentity;
+ 	}
+ 
+-	if (cid_eq(&best_id, &c->dds.clockIdentity)) {
+-		pr_notice("selected local clock %s as best master",
+-			  cid2str(&best_id));
+-	} else {
+-		pr_notice("selected best master clock %s",
+-			  cid2str(&best_id));
+-	}
+-
+ 	if (!cid_eq(&best_id, &c->best_id)) {
+ 		clock_freq_est_reset(c);
+ 		tsproc_reset(c->tsproc, 1);
+@@ -1957,6 +1950,13 @@ static void handle_state_decision_event(struct clock *c)
+ 		c->master_local_rr = 1.0;
+ 		c->nrr = 1.0;
+ 		fresh_best = 1;
++		if (cid_eq(&best_id, &c->dds.clockIdentity)) {
++			pr_notice("selected local clock %s as best master",
++					cid2str(&best_id));
++		} else {
++			pr_notice("selected best master clock %s",
++					cid2str(&best_id));
++		}
+ 	}
+ 
+ 	c->best = best;
+
+commit 766baf345cd4fb025d186f9c9bea5276aba398bc
+Author: Amar Subramanyam via Linuxptp-devel <linuxptp-devel@lists.sourceforge.net>
+Date:   Wed May 26 12:24:07 2021 +0300
+
+    Log optimization for ptp4l in jbod and client only mode (clientOnly=1 and boundary_clock_jbod=1)
+    
+    The port other than SLAVE (LISTENING port) prints an error
+    "port 1: master state recommended in slave only mode
+    ptp4l[1205469.356]: port 1: defaultDS.priority1 probably misconfigured"
+    for every ANNOUNCE RECEIPT Timeout.
+    
+    This log is printed when the event EV_RS_MASTER is thrown
+    in clientOnly mode. But single port clientOnly mode will never
+    hit this event instead EV_RS_GRAND_MASTER will be hit.
+    EV_RS_MASTER is thrown when clientOnly=1 and boundary_clock_jbod=1
+    which results in continuous printing. So EV_RS_MASTER check when
+    clientOnly=1 to print this error can be avoided.
+    
+    Signed-off-by: Amar Subramanyam <asubramanyam@altiostar.com>
+    Signed-off-by: Karthikkumar Valoor <kvaloor@altiostar.com>
+    Signed-off-by: Ramana Reddy <rreddy@altiostar.com>
+
+diff --git a/port.c b/port.c
+index 250d46d..b5b775f 100644
+--- a/port.c
++++ b/port.c
+@@ -2536,7 +2536,7 @@ void port_dispatch(struct port *p, enum fsm_event event, int mdiff)
+ static void bc_dispatch(struct port *p, enum fsm_event event, int mdiff)
+ {
+ 	if (clock_slave_only(p->clock)) {
+-		if (event == EV_RS_MASTER || event == EV_RS_GRAND_MASTER) {
++		if (event == EV_RS_GRAND_MASTER) {
+ 			port_slave_priority_warning(p);
+ 		}
+ 	}

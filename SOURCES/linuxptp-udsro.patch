@@ -1,0 +1,614 @@
+Patches backported from the upstream repository.
+
+commit acc045034dd0db9dd4c4aca4b26528f8fed2ae78
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 11 16:47:08 2021 +0100
+
+    port: Ignore non-management messages on UDS port.
+    
+    Drop non-management messages on the UDS port early in the processing to
+    prevent them from changing the port or clock state.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index fa49663..3fd06b1 100644
+--- a/port.c
++++ b/port.c
+@@ -56,6 +56,7 @@ enum syfu_event {
+ };
+ 
+ static int port_is_ieee8021as(struct port *p);
++static int port_is_uds(struct port *p);
+ static void port_nrate_initialize(struct port *p);
+ 
+ static int announce_compare(struct ptp_message *m1, struct ptp_message *m2)
+@@ -691,6 +692,9 @@ static int port_ignore(struct port *p, struct ptp_message *m)
+ {
+ 	struct ClockIdentity c1, c2;
+ 
++	if (port_is_uds(p) && msg_type(m) != MANAGEMENT) {
++		return 1;
++	}
+ 	if (incapable_ignore(p, m)) {
+ 		return 1;
+ 	}
+@@ -771,6 +775,11 @@ static int port_is_ieee8021as(struct port *p)
+ 	return p->follow_up_info ? 1 : 0;
+ }
+ 
++static int port_is_uds(struct port *p)
++{
++	return transport_type(p->trp) == TRANS_UDS;
++}
++
+ static void port_management_send_error(struct port *p, struct port *ingress,
+ 				       struct ptp_message *msg, int error_id)
+ {
+
+commit 72ec806fa62a87cb7e5444e27fa6bdcbfe4e27ca
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 11 16:47:09 2021 +0100
+
+    clock: Don't allow COMMAND action on non-UDS port.
+    
+    No COMMAND actions are currently supported, but check the port early in
+    clock_manage() before reaching port_manage().
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index a66d189..a6947bc 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1423,6 +1423,11 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 			return changed;
+ 		break;
+ 	case COMMAND:
++		if (p != c->uds_port) {
++			/* Sorry, only allowed on the UDS port. */
++			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
++			return changed;
++		}
+ 		break;
+ 	default:
+ 		return changed;
+
+commit 2b45d80eadcb81c8bdf45baf98dabeebd912b1b0
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 11 16:47:10 2021 +0100
+
+    clock: Rename UDS variables to read-write.
+    
+    In preparation for a new read-only UDS port, rename variables of the
+    current UDS port to make it clear it is read-write, as opposed to
+    read-only.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index a6947bc..d013b19 100644
+--- a/clock.c
++++ b/clock.c
+@@ -95,7 +95,7 @@ struct clock {
+ 	struct foreign_clock *best;
+ 	struct ClockIdentity best_id;
+ 	LIST_HEAD(ports_head, port) ports;
+-	struct port *uds_port;
++	struct port *uds_rw_port;
+ 	struct pollfd *pollfd;
+ 	int pollfd_valid;
+ 	int nports; /* does not include the UDS port */
+@@ -129,7 +129,7 @@ struct clock {
+ 	struct clock_stats stats;
+ 	int stats_interval;
+ 	struct clockcheck *sanity_check;
+-	struct interface *udsif;
++	struct interface *uds_rw_if;
+ 	LIST_HEAD(clock_subscribers_head, clock_subscriber) subscribers;
+ 	struct monitor *slave_event_monitor;
+ };
+@@ -245,7 +245,7 @@ void clock_send_notification(struct clock *c, struct ptp_message *msg,
+ {
+ 	unsigned int event_pos = event / 8;
+ 	uint8_t mask = 1 << (event % 8);
+-	struct port *uds = c->uds_port;
++	struct port *uds = c->uds_rw_port;
+ 	struct clock_subscriber *s;
+ 
+ 	LIST_FOREACH(s, &c->subscribers, list) {
+@@ -267,13 +267,13 @@ void clock_destroy(struct clock *c)
+ {
+ 	struct port *p, *tmp;
+ 
+-	interface_destroy(c->udsif);
++	interface_destroy(c->uds_rw_if);
+ 	clock_flush_subscriptions(c);
+ 	LIST_FOREACH_SAFE(p, &c->ports, list, tmp) {
+ 		clock_remove_port(c, p);
+ 	}
+ 	monitor_destroy(c->slave_event_monitor);
+-	port_close(c->uds_port);
++	port_close(c->uds_rw_port);
+ 	free(c->pollfd);
+ 	if (c->clkid != CLOCK_REALTIME) {
+ 		phc_close(c->clkid);
+@@ -442,7 +442,7 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 		datalen = sizeof(*gsn);
+ 		break;
+ 	case TLV_SUBSCRIBE_EVENTS_NP:
+-		if (p != c->uds_port) {
++		if (p != c->uds_rw_port) {
+ 			/* Only the UDS port allowed. */
+ 			break;
+ 		}
+@@ -784,7 +784,7 @@ static int forwarding(struct clock *c, struct port *p)
+ 	default:
+ 		break;
+ 	}
+-	if (p == c->uds_port && ps != PS_FAULTY) {
++	if (p == c->uds_rw_port && ps != PS_FAULTY) {
+ 		return 1;
+ 	}
+ 	return 0;
+@@ -1044,20 +1044,20 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 
+ 	/* Configure the UDS. */
+ 	uds_ifname = config_get_string(config, NULL, "uds_address");
+-	c->udsif = interface_create(uds_ifname);
+-	if (config_set_section_int(config, interface_name(c->udsif),
++	c->uds_rw_if = interface_create(uds_ifname);
++	if (config_set_section_int(config, interface_name(c->uds_rw_if),
+ 				   "announceReceiptTimeout", 0)) {
+ 		return NULL;
+ 	}
+-	if (config_set_section_int(config, interface_name(c->udsif),
++	if (config_set_section_int(config, interface_name(c->uds_rw_if),
+ 				    "delay_mechanism", DM_AUTO)) {
+ 		return NULL;
+ 	}
+-	if (config_set_section_int(config, interface_name(c->udsif),
++	if (config_set_section_int(config, interface_name(c->uds_rw_if),
+ 				    "network_transport", TRANS_UDS)) {
+ 		return NULL;
+ 	}
+-	if (config_set_section_int(config, interface_name(c->udsif),
++	if (config_set_section_int(config, interface_name(c->uds_rw_if),
+ 				   "delay_filter_length", 1)) {
+ 		return NULL;
+ 	}
+@@ -1180,14 +1180,15 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 	}
+ 
+ 	/* Create the UDS interface. */
+-	c->uds_port = port_open(phc_device, phc_index, timestamping, 0, c->udsif, c);
+-	if (!c->uds_port) {
++	c->uds_rw_port = port_open(phc_device, phc_index, timestamping, 0,
++				   c->uds_rw_if, c);
++	if (!c->uds_rw_port) {
+ 		pr_err("failed to open the UDS port");
+ 		return NULL;
+ 	}
+ 	clock_fda_changed(c);
+ 
+-	c->slave_event_monitor = monitor_create(config, c->uds_port);
++	c->slave_event_monitor = monitor_create(config, c->uds_rw_port);
+ 	if (!c->slave_event_monitor) {
+ 		pr_err("failed to create slave event monitor");
+ 		return NULL;
+@@ -1206,7 +1207,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 	LIST_FOREACH(p, &c->ports, list) {
+ 		port_dispatch(p, EV_INITIALIZE, 0);
+ 	}
+-	port_dispatch(c->uds_port, EV_INITIALIZE, 0);
++	port_dispatch(c->uds_rw_port, EV_INITIALIZE, 0);
+ 
+ 	return c;
+ }
+@@ -1314,7 +1315,7 @@ static void clock_check_pollfd(struct clock *c)
+ 		clock_fill_pollfd(dest, p);
+ 		dest += N_CLOCK_PFD;
+ 	}
+-	clock_fill_pollfd(dest, c->uds_port);
++	clock_fill_pollfd(dest, c->uds_rw_port);
+ 	c->pollfd_valid = 1;
+ }
+ 
+@@ -1331,7 +1332,7 @@ static int clock_do_forward_mgmt(struct clock *c,
+ 		return 0;
+ 
+ 	/* Don't forward any requests to the UDS port. */
+-	if (out == c->uds_port) {
++	if (out == c->uds_rw_port) {
+ 		switch (management_action(msg)) {
+ 		case GET:
+ 		case SET:
+@@ -1362,7 +1363,7 @@ static void clock_forward_mgmt_msg(struct clock *c, struct port *p, struct ptp_m
+ 				pr_err("port %d: management forward failed",
+ 				       port_number(piter));
+ 		}
+-		if (clock_do_forward_mgmt(c, p, c->uds_port, msg, &msg_ready))
++		if (clock_do_forward_mgmt(c, p, c->uds_rw_port, msg, &msg_ready))
+ 			pr_err("uds port: management forward failed");
+ 		if (msg_ready) {
+ 			msg_post_recv(msg, pdulen);
+@@ -1414,7 +1415,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 			clock_management_send_error(p, msg, TLV_WRONG_LENGTH);
+ 			return changed;
+ 		}
+-		if (p != c->uds_port) {
++		if (p != c->uds_rw_port) {
+ 			/* Sorry, only allowed on the UDS port. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return changed;
+@@ -1423,7 +1424,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 			return changed;
+ 		break;
+ 	case COMMAND:
+-		if (p != c->uds_port) {
++		if (p != c->uds_rw_port) {
+ 			/* Sorry, only allowed on the UDS port. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return changed;
+@@ -1435,7 +1436,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 
+ 	switch (mgt->id) {
+ 	case TLV_PORT_PROPERTIES_NP:
+-		if (p != c->uds_port) {
++		if (p != c->uds_rw_port) {
+ 			/* Only the UDS port allowed. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return 0;
+@@ -1500,7 +1501,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 
+ void clock_notify_event(struct clock *c, enum notification event)
+ {
+-	struct port *uds = c->uds_port;
++	struct port *uds = c->uds_rw_port;
+ 	struct PortIdentity pid = port_identity(uds);
+ 	struct ptp_message *msg;
+ 	int id;
+@@ -1604,7 +1605,7 @@ int clock_poll(struct clock *c)
+ 	/* Check the UDS port. */
+ 	for (i = 0; i < N_POLLFD; i++) {
+ 		if (cur[i].revents & (POLLIN|POLLPRI)) {
+-			event = port_event(c->uds_port, i);
++			event = port_event(c->uds_rw_port, i);
+ 			if (EV_STATE_DECISION_EVENT == event) {
+ 				c->sde = 1;
+ 			}
+
+commit 1f74a16502b55ce8eaed3d7488542e5469ac8263
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 11 16:47:11 2021 +0100
+
+    clock: Add read-only UDS port for monitoring.
+    
+    Add a second UDS port to allow untrusted applications to monitor ptp4l.
+    On this "read-only" UDS port disable non-GET actions and forwarding.
+    The path can be configured with the uds_ro_address option (default is
+    /var/run/ptp4lro).
+    
+    Forwarding is disabled to limit the access to the local ptp4l instance.
+    
+    Subscriptions are not enabled to prevent the applications from making a
+    large number of subscriptions or interfere with applications that have
+    access to the read-write UDS port.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index d013b19..8592d29 100644
+--- a/clock.c
++++ b/clock.c
+@@ -96,9 +96,10 @@ struct clock {
+ 	struct ClockIdentity best_id;
+ 	LIST_HEAD(ports_head, port) ports;
+ 	struct port *uds_rw_port;
++	struct port *uds_ro_port;
+ 	struct pollfd *pollfd;
+ 	int pollfd_valid;
+-	int nports; /* does not include the UDS port */
++	int nports; /* does not include the two UDS ports */
+ 	int last_port_number;
+ 	int sde;
+ 	int free_running;
+@@ -130,6 +131,7 @@ struct clock {
+ 	int stats_interval;
+ 	struct clockcheck *sanity_check;
+ 	struct interface *uds_rw_if;
++	struct interface *uds_ro_if;
+ 	LIST_HEAD(clock_subscribers_head, clock_subscriber) subscribers;
+ 	struct monitor *slave_event_monitor;
+ };
+@@ -268,12 +270,14 @@ void clock_destroy(struct clock *c)
+ 	struct port *p, *tmp;
+ 
+ 	interface_destroy(c->uds_rw_if);
++	interface_destroy(c->uds_ro_if);
+ 	clock_flush_subscriptions(c);
+ 	LIST_FOREACH_SAFE(p, &c->ports, list, tmp) {
+ 		clock_remove_port(c, p);
+ 	}
+ 	monitor_destroy(c->slave_event_monitor);
+ 	port_close(c->uds_rw_port);
++	port_close(c->uds_ro_port);
+ 	free(c->pollfd);
+ 	if (c->clkid != CLOCK_REALTIME) {
+ 		phc_close(c->clkid);
+@@ -443,7 +447,7 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 		break;
+ 	case TLV_SUBSCRIBE_EVENTS_NP:
+ 		if (p != c->uds_rw_port) {
+-			/* Only the UDS port allowed. */
++			/* Only the UDS-RW port allowed. */
+ 			break;
+ 		}
+ 		sen = (struct subscribe_events_np *)tlv->data;
+@@ -774,6 +778,10 @@ static int clock_utc_correct(struct clock *c, tmv_t ingress)
+ static int forwarding(struct clock *c, struct port *p)
+ {
+ 	enum port_state ps = port_state(p);
++
++	if (p == c->uds_ro_port)
++		return 0;
++
+ 	switch (ps) {
+ 	case PS_MASTER:
+ 	case PS_GRAND_MASTER:
+@@ -818,7 +826,7 @@ static int clock_add_port(struct clock *c, const char *phc_device,
+ {
+ 	struct port *p, *piter, *lastp = NULL;
+ 
+-	if (clock_resize_pollfd(c, c->nports + 1)) {
++	if (clock_resize_pollfd(c, c->nports + 2)) {
+ 		return -1;
+ 	}
+ 	p = port_open(phc_device, phc_index, timestamping,
+@@ -1043,6 +1051,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 	}
+ 
+ 	/* Configure the UDS. */
++
+ 	uds_ifname = config_get_string(config, NULL, "uds_address");
+ 	c->uds_rw_if = interface_create(uds_ifname);
+ 	if (config_set_section_int(config, interface_name(c->uds_rw_if),
+@@ -1062,6 +1071,25 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 		return NULL;
+ 	}
+ 
++	uds_ifname = config_get_string(config, NULL, "uds_ro_address");
++	c->uds_ro_if = interface_create(uds_ifname);
++	if (config_set_section_int(config, interface_name(c->uds_ro_if),
++				   "announceReceiptTimeout", 0)) {
++		return NULL;
++	}
++	if (config_set_section_int(config, interface_name(c->uds_ro_if),
++				   "delay_mechanism", DM_AUTO)) {
++		return NULL;
++	}
++	if (config_set_section_int(config, interface_name(c->uds_ro_if),
++				   "network_transport", TRANS_UDS)) {
++		return NULL;
++	}
++	if (config_set_section_int(config, interface_name(c->uds_ro_if),
++				   "delay_filter_length", 1)) {
++		return NULL;
++	}
++
+ 	c->config = config;
+ 	c->free_running = config_get_int(config, NULL, "free_running");
+ 	c->freq_est_interval = config_get_int(config, NULL, "freq_est_interval");
+@@ -1179,11 +1207,18 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 		return NULL;
+ 	}
+ 
+-	/* Create the UDS interface. */
++	/* Create the UDS interfaces. */
++
+ 	c->uds_rw_port = port_open(phc_device, phc_index, timestamping, 0,
+ 				   c->uds_rw_if, c);
+ 	if (!c->uds_rw_port) {
+-		pr_err("failed to open the UDS port");
++		pr_err("failed to open the UDS-RW port");
++		return NULL;
++	}
++	c->uds_ro_port = port_open(phc_device, phc_index, timestamping, 0,
++				   c->uds_ro_if, c);
++	if (!c->uds_ro_port) {
++		pr_err("failed to open the UDS-RO port");
+ 		return NULL;
+ 	}
+ 	clock_fda_changed(c);
+@@ -1208,6 +1243,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 		port_dispatch(p, EV_INITIALIZE, 0);
+ 	}
+ 	port_dispatch(c->uds_rw_port, EV_INITIALIZE, 0);
++	port_dispatch(c->uds_ro_port, EV_INITIALIZE, 0);
+ 
+ 	return c;
+ }
+@@ -1278,9 +1314,9 @@ static int clock_resize_pollfd(struct clock *c, int new_nports)
+ {
+ 	struct pollfd *new_pollfd;
+ 
+-	/* Need to allocate one whole extra block of fds for UDS. */
++	/* Need to allocate two whole extra blocks of fds for UDS ports. */
+ 	new_pollfd = realloc(c->pollfd,
+-			     (new_nports + 1) * N_CLOCK_PFD *
++			     (new_nports + 2) * N_CLOCK_PFD *
+ 			     sizeof(struct pollfd));
+ 	if (!new_pollfd) {
+ 		return -1;
+@@ -1316,6 +1352,8 @@ static void clock_check_pollfd(struct clock *c)
+ 		dest += N_CLOCK_PFD;
+ 	}
+ 	clock_fill_pollfd(dest, c->uds_rw_port);
++	dest += N_CLOCK_PFD;
++	clock_fill_pollfd(dest, c->uds_ro_port);
+ 	c->pollfd_valid = 1;
+ }
+ 
+@@ -1331,7 +1369,8 @@ static int clock_do_forward_mgmt(struct clock *c,
+ 	if (in == out || !forwarding(c, out))
+ 		return 0;
+ 
+-	/* Don't forward any requests to the UDS port. */
++	/* Don't forward any requests to the UDS-RW port
++	   (the UDS-RO port doesn't allow any forwarding). */
+ 	if (out == c->uds_rw_port) {
+ 		switch (management_action(msg)) {
+ 		case GET:
+@@ -1416,7 +1455,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 			return changed;
+ 		}
+ 		if (p != c->uds_rw_port) {
+-			/* Sorry, only allowed on the UDS port. */
++			/* Sorry, only allowed on the UDS-RW port. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return changed;
+ 		}
+@@ -1425,7 +1464,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 		break;
+ 	case COMMAND:
+ 		if (p != c->uds_rw_port) {
+-			/* Sorry, only allowed on the UDS port. */
++			/* Sorry, only allowed on the UDS-RW port. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return changed;
+ 		}
+@@ -1437,7 +1476,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
+ 	switch (mgt->id) {
+ 	case TLV_PORT_PROPERTIES_NP:
+ 		if (p != c->uds_rw_port) {
+-			/* Only the UDS port allowed. */
++			/* Only the UDS-RW port allowed. */
+ 			clock_management_send_error(p, msg, TLV_NOT_SUPPORTED);
+ 			return 0;
+ 		}
+@@ -1548,7 +1587,7 @@ int clock_poll(struct clock *c)
+ 	struct port *p;
+ 
+ 	clock_check_pollfd(c);
+-	cnt = poll(c->pollfd, (c->nports + 1) * N_CLOCK_PFD, -1);
++	cnt = poll(c->pollfd, (c->nports + 2) * N_CLOCK_PFD, -1);
+ 	if (cnt < 0) {
+ 		if (EINTR == errno) {
+ 			return 0;
+@@ -1602,7 +1641,7 @@ int clock_poll(struct clock *c)
+ 		cur += N_CLOCK_PFD;
+ 	}
+ 
+-	/* Check the UDS port. */
++	/* Check the UDS ports. */
+ 	for (i = 0; i < N_POLLFD; i++) {
+ 		if (cur[i].revents & (POLLIN|POLLPRI)) {
+ 			event = port_event(c->uds_rw_port, i);
+@@ -1611,6 +1650,13 @@ int clock_poll(struct clock *c)
+ 			}
+ 		}
+ 	}
++	cur += N_CLOCK_PFD;
++	for (i = 0; i < N_POLLFD; i++) {
++		if (cur[i].revents & (POLLIN|POLLPRI)) {
++			event = port_event(c->uds_ro_port, i);
++			/* sde is not expected on the UDS-RO port */
++		}
++	}
+ 
+ 	if (c->sde) {
+ 		handle_state_decision_event(c);
+diff --git a/config.c b/config.c
+index d237de9..96a5351 100644
+--- a/config.c
++++ b/config.c
+@@ -323,6 +323,7 @@ struct config_item config_tab[] = {
+ 	PORT_ITEM_INT("udp_ttl", 1, 1, 255),
+ 	PORT_ITEM_INT("udp6_scope", 0x0E, 0x00, 0x0F),
+ 	GLOB_ITEM_STR("uds_address", "/var/run/ptp4l"),
++	GLOB_ITEM_STR("uds_ro_address", "/var/run/ptp4lro"),
+ 	PORT_ITEM_INT("unicast_listen", 0, 0, 1),
+ 	PORT_ITEM_INT("unicast_master_table", 0, 0, INT_MAX),
+ 	PORT_ITEM_INT("unicast_req_duration", 3600, 10, INT_MAX),
+diff --git a/configs/default.cfg b/configs/default.cfg
+index 8c19129..d5bab7d 100644
+--- a/configs/default.cfg
++++ b/configs/default.cfg
+@@ -90,6 +90,7 @@ p2p_dst_mac		01:80:C2:00:00:0E
+ udp_ttl			1
+ udp6_scope		0x0E
+ uds_address		/var/run/ptp4l
++uds_ro_address		/var/run/ptp4lro
+ #
+ # Default interface options
+ #
+diff --git a/ptp4l.8 b/ptp4l.8
+index b179b81..f9bd228 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -615,6 +615,12 @@ is only relevant with IPv6 transport.  See RFC 4291.  The default is
+ Specifies the address of the UNIX domain socket for receiving local
+ management messages. The default is /var/run/ptp4l.
+ .TP
++.B uds_ro_address
++Specifies the address of the second UNIX domain socket for receiving local
++management messages, which is restricted to GET actions and does not forward
++messages to other ports. Access to this socket can be given to untrusted
++applications for monitoring purposes. The default is /var/run/ptp4lro.
++.TP
+ .B dscp_event
+ Defines the Differentiated Services Codepoint (DSCP) to be used for PTP
+ event messages. Must be a value between 0 and 63. There are several media
+
+commit d4c5343237588d265c605f3772337bc88cabe787
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 11 16:47:12 2021 +0100
+
+    timemaster: Set uds_ro_address for ptp4l instances.
+    
+    This prevents conflicts on the new UDS-RO port.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/timemaster.c b/timemaster.c
+index 00db59f..02408d6 100644
+--- a/timemaster.c
++++ b/timemaster.c
+@@ -712,7 +712,7 @@ static int add_ptp_source(struct ptp_domain *source,
+ 			  char **ntp_config, struct script *script)
+ {
+ 	struct config_file *config_file;
+-	char **command, *uds_path, **interfaces, *message_tag;
++	char **command, *uds_path, *uds_path2, **interfaces, *message_tag;
+ 	char ts_interface[IF_NAMESIZE];
+ 	int i, j, num_interfaces, *phc, *phcs, hw_ts, sw_ts;
+ 	struct sk_ts_info ts_info;
+@@ -809,6 +809,8 @@ static int add_ptp_source(struct ptp_domain *source,
+ 
+ 		uds_path = string_newf("%s/ptp4l.%d.socket",
+ 				       config->rundir, *shm_segment);
++		uds_path2 = string_newf("%s/ptp4lro.%d.socket",
++					config->rundir, *shm_segment);
+ 
+ 		message_tag = string_newf("[%d", source->domain);
+ 		for (j = 0; interfaces[j]; j++)
+@@ -832,8 +834,10 @@ static int add_ptp_source(struct ptp_domain *source,
+ 			       "slaveOnly 1\n"
+ 			       "domainNumber %d\n"
+ 			       "uds_address %s\n"
++			       "uds_ro_address %s\n"
+ 			       "message_tag %s\n",
+-			       source->domain, uds_path, message_tag);
++			       source->domain, uds_path, uds_path2,
++			       message_tag);
+ 
+ 		if (phcs[i] >= 0) {
+ 			/* HW time stamping */
+@@ -868,6 +872,7 @@ static int add_ptp_source(struct ptp_domain *source,
+ 
+ 		free(message_tag);
+ 		free(uds_path);
++		free(uds_path2);
+ 		free(interfaces);
+ 	}
+ 
