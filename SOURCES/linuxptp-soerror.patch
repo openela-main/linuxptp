@@ -1,0 +1,84 @@
+commit 2db8da6d1e3db074c01516c74899d42089039bc8
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Apr 26 13:45:41 2023 +0200
+
+    Clear pending errors on sockets.
+    
+    When the netlink socket of a port (used for receiving link up/down
+    events) had an error (e.g. ENOBUFS due to the kernel sending too many
+    messages), ptp4l switched the port to the faulty state, but it kept
+    getting POLLERR on the socket and logged "port 1: unexpected socket
+    error" in an infinite loop.
+    
+    Unlike the PTP event and general sockets, the netlink sockets cannot be
+    closed in the faulty state as they are needed to receive the link up event.
+    
+    Instead, receive and clear the error on all descriptors getting POLLERR
+    with getsockopt(SO_ERROR). Include the error in the log message together
+    with the descriptor index to make it easier to debug issues like this in
+    future.
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 469aab6..2821fc4 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1611,8 +1611,10 @@ int clock_poll(struct clock *c)
+ 			if (cur[i].revents & (POLLIN|POLLPRI|POLLERR)) {
+ 				prior_state = port_state(p);
+ 				if (cur[i].revents & POLLERR) {
+-					pr_err("port %d: unexpected socket error",
+-					       port_number(p));
++					int error = sk_get_error(cur[i].fd);
++					pr_err("port %d: error on fda[%d]: %s",
++					       port_number(p), i,
++					       strerror(error));
+ 					event = EV_FAULT_DETECTED;
+ 				} else {
+ 					event = port_event(p, i);
+diff --git a/sk.c b/sk.c
+index 3595649..47d8c3b 100644
+--- a/sk.c
++++ b/sk.c
+@@ -413,6 +413,20 @@ int sk_receive(int fd, void *buf, int buflen,
+ 	return cnt < 0 ? -errno : cnt;
+ }
+ 
++int sk_get_error(int fd)
++{
++	socklen_t len;
++	int error;
++
++	len = sizeof (error);
++	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
++		pr_err("getsockopt SO_ERROR failed: %m");
++		return -1;
++	}
++
++	return error;
++}
++
+ int sk_set_priority(int fd, int family, uint8_t dscp)
+ {
+ 	int level, optname, tos;
+diff --git a/sk.h b/sk.h
+index 04d26ee..ba88e2f 100644
+--- a/sk.h
++++ b/sk.h
+@@ -109,6 +109,13 @@ int sk_interface_addr(const char *name, int family, struct address *addr);
+ int sk_receive(int fd, void *buf, int buflen,
+ 	       struct address *addr, struct hw_timestamp *hwts, int flags);
+ 
++/**
++ * Get and clear a pending socket error.
++ * @param fd      An open socket.
++ * @return        The error.
++ */
++int sk_get_error(int fd);
++
+ /**
+  * Set DSCP value for socket.
+  * @param fd     An open socket.

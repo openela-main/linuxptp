@@ -1,0 +1,451 @@
+commit afd709924edcea26fec24a6253d1b85fc94c88e6
+Author: Hangbin Liu <liuhangbin@gmail.com>
+Date:   Wed May 25 14:46:14 2022 +0800
+
+    ptp4l: init iface->ts_label when interface created
+    
+    It's redundant to ensure tslabel if we could get ts_info directly from
+    the interface. By init iface->ts_label when interface created, there is
+    no need to take care of ts_label on other places.
+    
+    It will also make the later vlan over bonding support patch more clear
+    after removing function interface_ensure_tslabel().
+    
+    Signed-off-by: Hangbin Liu <liuhangbin@gmail.com>
+
+diff --git a/clock.c b/clock.c
+index 7ffbd6a..d4f273f 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1006,9 +1006,8 @@ struct clock *clock_create(enum clock_type type, struct config *config,
+ 	required_modes = clock_required_modes(c);
+ 	STAILQ_FOREACH(iface, &config->interfaces, list) {
+ 		memset(ts_label, 0, sizeof(ts_label));
+-		rtnl_get_ts_device(interface_name(iface), ts_label);
+-		interface_set_label(iface, ts_label);
+-		interface_ensure_tslabel(iface);
++		if (!rtnl_get_ts_device(interface_name(iface), ts_label))
++			interface_set_label(iface, ts_label);
+ 		interface_get_tsinfo(iface);
+ 		if (interface_tsinfo_valid(iface) &&
+ 		    !interface_tsmodes_supported(iface, required_modes)) {
+diff --git a/interface.c b/interface.c
+index 445a270..6c2630c 100644
+--- a/interface.c
++++ b/interface.c
+@@ -24,6 +24,7 @@ struct interface *interface_create(const char *name)
+ 		return NULL;
+ 	}
+ 	strncpy(iface->name, name, MAX_IFNAME_SIZE);
++	strncpy(iface->ts_label, name, MAX_IFNAME_SIZE);
+ 	iface->vclock = -1;
+ 
+ 	return iface;
+@@ -34,13 +35,6 @@ void interface_destroy(struct interface *iface)
+ 	free(iface);
+ }
+ 
+-void interface_ensure_tslabel(struct interface *iface)
+-{
+-	if (!iface->ts_label[0]) {
+-		memcpy(iface->ts_label, iface->name, MAX_IFNAME_SIZE);
+-	}
+-}
+-
+ int interface_get_tsinfo(struct interface *iface)
+ {
+ 	return sk_get_ts_info(iface->ts_label, &iface->ts_info);
+diff --git a/interface.h b/interface.h
+index 752f4f1..5fc7836 100644
+--- a/interface.h
++++ b/interface.h
+@@ -33,12 +33,6 @@ struct interface *interface_create(const char *name);
+  */
+ void interface_destroy(struct interface *iface);
+ 
+-/**
+- * Ensures that an interface has a proper time stamping label.
+- * @param iface  The interface of interest.
+- */
+-void interface_ensure_tslabel(struct interface *iface);
+-
+ /**
+  * Populate the time stamping information of a given interface.
+  * @param iface  The interface of interest.
+diff --git a/nsm.c b/nsm.c
+index 5aa925b..8d4a362 100644
+--- a/nsm.c
++++ b/nsm.c
+@@ -274,9 +274,8 @@ static int nsm_open(struct nsm *nsm, struct config *cfg)
+ 	STAILQ_FOREACH(iface, &cfg->interfaces, list) {
+ 		ifname = interface_name(iface);
+ 		memset(ts_label, 0, sizeof(ts_label));
+-		rtnl_get_ts_device(ifname, ts_label);
+-		interface_set_label(iface, ts_label);
+-		interface_ensure_tslabel(iface);
++		if (!rtnl_get_ts_device(ifname, ts_label))
++			interface_set_label(iface, ts_label);
+ 		count++;
+ 	}
+ 	if (count != 1) {
+diff --git a/pmc_common.c b/pmc_common.c
+index 756edf5..ee2ece6 100644
+--- a/pmc_common.c
++++ b/pmc_common.c
+@@ -405,7 +405,6 @@ struct pmc *pmc_create(struct config *cfg, enum transport_type transport_type,
+ 		pr_err("failed to create interface");
+ 		goto failed;
+ 	}
+-	interface_ensure_tslabel(pmc->iface);
+ 
+ 	if (transport_open(pmc->transport, pmc->iface,
+ 			   &pmc->fdarray, TS_SOFTWARE)) {
+
+commit 6aab466eb0563c1025c78ab496b22a8833b02d20
+Author: Vincent Cheng <vincent.cheng.xh@renesas.com>
+Date:   Fri Jan 8 10:21:14 2021 -0500
+
+    port: Fix link down/up to continue using phc_index set from command line -p option.
+    
+    In the scenario where a port link goes down and up, current code checks
+    the port's phc_index against the interface's phc_index and if they are
+    different will set the port phc_index to the interface phc_index.
+    
+    If the phc_index was initially set by the command line -p option, then we
+    end up using the wrong phc_index.
+    
+    Fix is to skip updating the port phc_index with the interface phc_index
+    when port link is back up if it was initialy set from the command line.
+    
+    Signed-off-by: Vincent Cheng <vincent.cheng.xh@renesas.com>
+
+diff --git a/port.c b/port.c
+index 70b6e60..d22f30f 100644
+--- a/port.c
++++ b/port.c
+@@ -2601,6 +2601,11 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 				       "timestamping mode, set link status down by force.",
+ 				       interface_label(p->iface));
+ 				p->link_status = LINK_DOWN | LINK_STATE_CHANGED;
++			} else if (p->phc_from_cmdline) {
++				pr_warning("port %d: taking /dev/ptp%d from the "
++					   "command line, not the attached ptp%d",
++					   portnum(p), p->phc_index,
++					   interface_phc_index(p->iface));
+ 			} else if (p->phc_index != interface_phc_index(p->iface)) {
+ 				p->phc_index = interface_phc_index(p->iface);
+ 
+@@ -3107,6 +3112,7 @@ struct port *port_open(const char *phc_device,
+ 				   "not the attached ptp%d", number, phc_device,
+ 				   interface_phc_index(interface));
+ 			p->phc_index = phc_index;
++			p->phc_from_cmdline = 1;
+ 		} else {
+ 			pr_err("port %d: PHC device mismatch", number);
+ 			pr_err("port %d: /dev/ptp%d requested, ptp%d attached",
+diff --git a/port_private.h b/port_private.h
+index fcabaa6..6e40e15 100644
+--- a/port_private.h
++++ b/port_private.h
+@@ -69,6 +69,7 @@ struct port {
+ 	struct fdarray fda;
+ 	int fault_fd;
+ 	int phc_index;
++	int phc_from_cmdline;
+ 
+ 	void (*dispatch)(struct port *p, enum fsm_event event, int mdiff);
+ 	enum fsm_event (*event)(struct port *p, int fd_index);
+
+commit 45f20e824fdfb8748d73495ccc7578dc70866282
+Author: Hangbin Liu <liuhangbin@gmail.com>
+Date:   Wed May 25 14:46:15 2022 +0800
+
+    port: refactor port_link_status
+    
+    Split port_change_phc() logic form port_link_status() to improve the
+    readability of the code
+    
+    (Rebased to 3.1.1)
+    
+    Signed-off-by: Hangbin Liu <liuhangbin@gmail.com>
+
+diff --git a/port.c b/port.c
+index d22f30f..031b212 100644
+--- a/port.c
++++ b/port.c
+@@ -2563,10 +2563,43 @@ static void bc_dispatch(struct port *p, enum fsm_event event, int mdiff)
+ 	}
+ }
+ 
++static void port_change_phc(struct port *p)
++{
++	int required_modes;
++
++	/* Only switch a non-vclock PHC with HW time stamping. */
++	if (!interface_tsinfo_valid(p->iface) ||
++	    interface_get_vclock(p->iface) >= 0 ||
++	    interface_phc_index(p->iface) < 0)
++		return;
++
++	required_modes = clock_required_modes(p->clock);
++	if (!interface_tsmodes_supported(p->iface, required_modes)) {
++		pr_err("interface '%s' does not support requested "
++		       "timestamping mode, set link status down by force.",
++		       interface_label(p->iface));
++		p->link_status = LINK_DOWN | LINK_STATE_CHANGED;
++	} else if (p->phc_from_cmdline) {
++		pr_warning("port %d: taking /dev/ptp%d from the "
++			   "command line, not the attached ptp%d",
++			   portnum(p), p->phc_index,
++			   interface_phc_index(p->iface));
++	} else if (p->phc_index != interface_phc_index(p->iface)) {
++		p->phc_index = interface_phc_index(p->iface);
++
++		if (clock_switch_phc(p->clock, p->phc_index)) {
++			p->last_fault_type = FT_SWITCH_PHC;
++			port_dispatch(p, EV_FAULT_DETECTED, 0);
++			return;
++		}
++		clock_sync_interval(p->clock, p->log_sync_interval);
++	}
++}
++
+ void port_link_status(void *ctx, int linkup, int ts_index)
+ {
+ 	char ts_label[MAX_IFNAME_SIZE + 1] = {0};
+-	int link_state, required_modes;
++	int link_state;
+ 	const char *old_ts_label;
+ 	struct port *p = ctx;
+ 
+@@ -2590,33 +2623,7 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 	if (p->link_status & LINK_UP &&
+ 	    (p->link_status & LINK_STATE_CHANGED || p->link_status & TS_LABEL_CHANGED)) {
+ 		interface_get_tsinfo(p->iface);
+-
+-		/* Only switch a non-vclock PHC with HW time stamping. */
+-		if (interface_tsinfo_valid(p->iface) &&
+-		    interface_get_vclock(p->iface) < 0 &&
+-		    interface_phc_index(p->iface) >= 0) {
+-			required_modes = clock_required_modes(p->clock);
+-			if (!interface_tsmodes_supported(p->iface, required_modes)) {
+-				pr_err("interface '%s' does not support requested "
+-				       "timestamping mode, set link status down by force.",
+-				       interface_label(p->iface));
+-				p->link_status = LINK_DOWN | LINK_STATE_CHANGED;
+-			} else if (p->phc_from_cmdline) {
+-				pr_warning("port %d: taking /dev/ptp%d from the "
+-					   "command line, not the attached ptp%d",
+-					   portnum(p), p->phc_index,
+-					   interface_phc_index(p->iface));
+-			} else if (p->phc_index != interface_phc_index(p->iface)) {
+-				p->phc_index = interface_phc_index(p->iface);
+-
+-				if (clock_switch_phc(p->clock, p->phc_index)) {
+-					p->last_fault_type = FT_SWITCH_PHC;
+-					port_dispatch(p, EV_FAULT_DETECTED, 0);
+-					return;
+-				}
+-				clock_sync_interval(p->clock, p->log_sync_interval);
+-			}
+-		}
++		port_change_phc(p);
+ 	}
+ 
+ 	/*
+
+commit 878c2eac77cc7abd1d86620a82ae9046545439ea
+Author: Hangbin Liu <liuhangbin@gmail.com>
+Date:   Wed May 25 14:46:16 2022 +0800
+
+    ptp4l: add VLAN over bond support
+    
+    Latest Linux kernel has supported getting active port's PHC from bond
+    directly. This would help topology like VLAN over bond to get PHC natively,
+    as VLAN also albe to get downlink's PHC.
+    
+    To achieve this, the new hwtstamp flag is needed when passing hwtstamp_config
+    to kernel. Let's supply the flag first, and fall back without flag if user
+    run on old kernel.
+    
+    We also need to update the PHC index in port_link_status() when there is
+    a RTNL event. The PHC info will be update in later port_change_phc().
+    
+    Signed-off-by: Hangbin Liu <liuhangbin@gmail.com>
+
+diff --git a/clock.c b/clock.c
+index d4f273f..f3df220 100644
+--- a/clock.c
++++ b/clock.c
+@@ -1758,6 +1758,9 @@ int clock_switch_phc(struct clock *c, int phc_index)
+ 	c->clkid = clkid;
+ 	c->servo = servo;
+ 	c->servo_state = SERVO_UNLOCKED;
++
++	pr_info("Switched to /dev/ptp%d as PTP clock", phc_index);
++
+ 	return 0;
+ }
+ 
+diff --git a/missing.h b/missing.h
+index c5194f4..5f684dd 100644
+--- a/missing.h
++++ b/missing.h
+@@ -73,6 +73,12 @@ struct so_timestamping {
+ };
+ #endif
+ 
++#ifndef HWTSTAMP_FLAG_BONDED_PHC_INDEX
++enum {
++	HWTSTAMP_FLAG_BONDED_PHC_INDEX = (1<<0),
++};
++#endif
++
+ #ifdef PTP_EXTTS_REQUEST2
+ #define PTP_EXTTS_REQUEST_FAILED "PTP_EXTTS_REQUEST2 failed: %m"
+ #else
+diff --git a/port.c b/port.c
+index 031b212..ae9c4d3 100644
+--- a/port.c
++++ b/port.c
+@@ -2619,12 +2619,18 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 		pr_notice("port %hu: ts label changed to %s", portnum(p), ts_label);
+ 	}
+ 
++	/* phc index may changed while ts_label keeps the same after failover.
++	 * e.g. vlan over bond. Since the lower link changed, we still set
++	 * the TS_LABEL_CHANGED flag.
++	 */
++	interface_get_tsinfo(p->iface);
++	if (p->phc_index != interface_phc_index(p->iface))
++		p->link_status |= TS_LABEL_CHANGED;
++
+ 	/* Both link down/up and change ts_label may change phc index. */
+ 	if (p->link_status & LINK_UP &&
+-	    (p->link_status & LINK_STATE_CHANGED || p->link_status & TS_LABEL_CHANGED)) {
+-		interface_get_tsinfo(p->iface);
++	    (p->link_status & LINK_STATE_CHANGED || p->link_status & TS_LABEL_CHANGED))
+ 		port_change_phc(p);
+-	}
+ 
+ 	/*
+ 	 * A port going down can affect the BMCA result.
+diff --git a/sk.c b/sk.c
+index b55d6b5..80075be 100644
+--- a/sk.c
++++ b/sk.c
+@@ -66,6 +66,11 @@ static int hwts_init(int fd, const char *device, int rx_filter,
+ 
+ 	init_ifreq(&ifreq, &cfg, device);
+ 
++	cfg.flags = HWTSTAMP_FLAG_BONDED_PHC_INDEX;
++	/* Fall back without flag if user run new build on old kernel */
++	if (ioctl(fd, SIOCGHWTSTAMP, &ifreq) == -EINVAL)
++		init_ifreq(&ifreq, &cfg, device);
++
+ 	switch (sk_hwts_filter_mode) {
+ 	case HWTS_FILTER_CHECK:
+ 		err = ioctl(fd, SIOCGHWTSTAMP, &ifreq);
+
+commit 98edb4d72b3d1d4e988f810b9a9cb1078212e5dc
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Nov 22 17:07:16 2022 +0100
+
+    port: Avoid faults with vclocks and PHC from command line.
+    
+    After commit afeabf3c90ed ("ptp4l: add VLAN over bond support") the
+    TS_LABEL_CHANGED flag was set on link status changes when the used
+    PHC index was different from the PHC index of the interface.
+    
+    This caused the port to be constantly switching to the faulty state when
+    using vclocks, or a different PHC device was forced with the -p option,
+    where it is expected the used PHC doesn't match the interface's PHC.
+    
+    Rework port_link_status() and port_change_phc() to avoid setting the
+    flag and switch the clock only in the cases where it is expected.
+    
+    Fixes: afeabf3c90ed ("ptp4l: add VLAN over bond support")
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index ae9c4d3..96e097a 100644
+--- a/port.c
++++ b/port.c
+@@ -2567,10 +2567,13 @@ static void port_change_phc(struct port *p)
+ {
+ 	int required_modes;
+ 
+-	/* Only switch a non-vclock PHC with HW time stamping. */
+-	if (!interface_tsinfo_valid(p->iface) ||
++	/* Try to switch only if the interface is up, it has HW time stamping
++	   using a non-vclock PHC, and the PHC actually changed. */
++	if (!(p->link_status & LINK_UP) ||
++	    !interface_tsinfo_valid(p->iface) ||
+ 	    interface_get_vclock(p->iface) >= 0 ||
+-	    interface_phc_index(p->iface) < 0)
++	    interface_phc_index(p->iface) < 0 ||
++	    p->phc_index == interface_phc_index(p->iface))
+ 		return;
+ 
+ 	required_modes = clock_required_modes(p->clock);
+@@ -2584,7 +2587,7 @@ static void port_change_phc(struct port *p)
+ 			   "command line, not the attached ptp%d",
+ 			   portnum(p), p->phc_index,
+ 			   interface_phc_index(p->iface));
+-	} else if (p->phc_index != interface_phc_index(p->iface)) {
++	} else {
+ 		p->phc_index = interface_phc_index(p->iface);
+ 
+ 		if (clock_switch_phc(p->clock, p->phc_index)) {
+@@ -2619,18 +2622,12 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 		pr_notice("port %hu: ts label changed to %s", portnum(p), ts_label);
+ 	}
+ 
+-	/* phc index may changed while ts_label keeps the same after failover.
+-	 * e.g. vlan over bond. Since the lower link changed, we still set
+-	 * the TS_LABEL_CHANGED flag.
+-	 */
++	/* The PHC index may change even with the same ts_label, e.g. after
++	   failover with VLAN over bond. */
+ 	interface_get_tsinfo(p->iface);
+-	if (p->phc_index != interface_phc_index(p->iface))
+-		p->link_status |= TS_LABEL_CHANGED;
+ 
+-	/* Both link down/up and change ts_label may change phc index. */
+-	if (p->link_status & LINK_UP &&
+-	    (p->link_status & LINK_STATE_CHANGED || p->link_status & TS_LABEL_CHANGED))
+-		port_change_phc(p);
++	/* Switch the clock if needed */
++	port_change_phc(p);
+ 
+ 	/*
+ 	 * A port going down can affect the BMCA result.
+commit 730a775fec159f012f3e0f65bb059465e9f7b49b
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Mar 15 11:24:16 2023 +0100
+
+    port: Don't switch to PHC with SW timestamping.
+    
+    When ptp4l was configured to use SW timestamping, but the interface
+    supported also HW timestamping, ptp4l detected a change of the PHC on
+    start, switched to it from the system clock, and tried to control the
+    PHC using SW timestamps.
+    
+    Don't switch the PHC if the current PHC index is -1, which is expected
+    with SW timestamping and in the free-running mode.
+    
+    Fixes: afeabf3c90ed ("ptp4l: add VLAN over bond support")
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index 96e097a..32ee83b 100644
+--- a/port.c
++++ b/port.c
+@@ -2570,6 +2570,7 @@ static void port_change_phc(struct port *p)
+ 	/* Try to switch only if the interface is up, it has HW time stamping
+ 	   using a non-vclock PHC, and the PHC actually changed. */
+ 	if (!(p->link_status & LINK_UP) ||
++	    p->phc_index < 0 ||
+ 	    !interface_tsinfo_valid(p->iface) ||
+ 	    interface_get_vclock(p->iface) >= 0 ||
+ 	    interface_phc_index(p->iface) < 0 ||
