@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	3.1.1
-Release:	3%{?dist}.2
+Release:	6%{?dist}
 Summary:	PTP implementation for Linux
 
 Group:		System Environment/Base
@@ -41,6 +41,8 @@ Patch9:		linuxptp-zerolength.patch
 Patch10:	linuxptp-clockcheck.patch
 # handle PHC read failing with EBUSY in phc2sys
 Patch11:	linuxptp-phcerr.patch
+# handle EINTR when waiting for transmit timestamp
+Patch15:	linuxptp-eintr.patch
 # don't re-arm fault clearing timer on unrelated netlink events
 Patch17:	linuxptp-faultrearm.patch
 # clear pending errors on sockets
@@ -70,6 +72,7 @@ Supporting legacy APIs and other platforms is not a goal.
 %patch9 -p1 -b .zerolength
 %patch10 -p1 -b .clockcheck
 %patch11 -p1 -b .phcerr
+%patch15 -p1 -b .eintr
 %patch17 -p1 -b .faultrearm
 %patch18 -p1 -b .soerror
 mv linuxptp-testsuite-%{testsuite_ver}* testsuite
@@ -135,11 +138,14 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
-* Tue May 09 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-3.el8_8.2
-- clear pending errors on sockets (#2196507)
+* Wed May 03 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-6
+- clear pending errors on sockets (#2192560)
 
-* Tue Mar 21 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-3.el8_8.1
-- don't re-arm fault clearing timer on unrelated netlink events (#2180037)
+* Wed Apr 12 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-5
+- handle EINTR when waiting for transmit timestamp (#2123224)
+
+* Mon Mar 20 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-4
+- don't re-arm fault clearing timer on unrelated netlink events (#2174900)
 
 * Wed Jun 29 2022 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-3
 - handle PHC read failing with EBUSY in phc2sys (#2079129)
