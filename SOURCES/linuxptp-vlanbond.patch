@@ -420,7 +420,7 @@ index ae9c4d3..96e097a 100644
  
  	/*
  	 * A port going down can affect the BMCA result.
-commit 730a775fec159f012f3e0f65bb059465e9f7b49b
+commit 8cf63218e4cc33d63bb783bf322d4a0d2f4be73e
 Author: Miroslav Lichvar <mlichvar@redhat.com>
 Date:   Wed Mar 15 11:24:16 2023 +0100
 

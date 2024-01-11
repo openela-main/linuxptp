@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	3.1.1
-Release:	6%{?dist}.2
+Release:	9%{?dist}
 Summary:	PTP implementation for Linux
 
 License:	GPLv2+
@@ -148,12 +148,14 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
-* Thu May 18 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-6.el9_2.2
-- don't re-arm fault clearing timer on unrelated netlink events (#2208265)
-- clear pending errors on sockets (#2208210)
+* Wed May 03 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-9
+- clear pending errors on sockets (#2192559)
 
-* Mon Mar 20 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-6.el9_2.1
-- don't switch from system clock to PHC with SW timestamping (#2178233)
+* Mon Mar 20 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-8
+- don't switch from system clock to PHC with SW timestamping (#2179041)
+
+* Thu Mar 09 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-7
+- don't re-arm fault clearing timer on unrelated netlink events (#2172650)
 
 * Thu Jan 05 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-6
 - add support for VLAN over bond (#2120521)
