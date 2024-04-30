@@ -1,0 +1,60 @@
+commit 6e480c9572925a4ea8aac45a10a306e0c4e509a9
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 11 11:33:54 2024 +0100
+
+    Revert default PTP version to 2.0 for better compatibility.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/config.c b/config.c
+index 398b420..d7775c0 100644
+--- a/config.c
++++ b/config.c
+@@ -319,7 +319,7 @@ struct config_item config_tab[] = {
+ 	GLOB_ITEM_STR("productDescription", ";;"),
+ 	PORT_ITEM_STR("ptp_dst_mac", "01:1B:19:00:00:00"),
+ 	PORT_ITEM_STR("p2p_dst_mac", "01:80:C2:00:00:0E"),
+-	GLOB_ITEM_INT("ptp_minor_version", 1, 0, 1),
++	GLOB_ITEM_INT("ptp_minor_version", 0, 0, 1),
+ 	GLOB_ITEM_STR("refclock_sock_address", "/var/run/refclock.ptp.sock"),
+ 	GLOB_ITEM_STR("revisionData", ";;"),
+ 	GLOB_ITEM_INT("sanity_freq_limit", 200000000, 0, INT_MAX),
+diff --git a/configs/default.cfg b/configs/default.cfg
+index 0c7661c..8f94c16 100644
+--- a/configs/default.cfg
++++ b/configs/default.cfg
+@@ -46,7 +46,7 @@ power_profile.2011.networkTimeInaccuracy	-1
+ power_profile.2017.totalTimeInaccuracy		-1
+ power_profile.grandmasterID			0
+ power_profile.version				none
+-ptp_minor_version       1
++ptp_minor_version       0
+ #
+ # Run time options
+ #
+diff --git a/msg.h b/msg.h
+index 9c80f45..786ddc7 100644
+--- a/msg.h
++++ b/msg.h
+@@ -32,7 +32,7 @@
+ 
+ /* Version definition for IEEE 1588-2019 */
+ #define PTP_MAJOR_VERSION	2
+-#define PTP_MINOR_VERSION	1
++#define PTP_MINOR_VERSION	0
+ #define PTP_VERSION		(PTP_MINOR_VERSION << 4 | PTP_MAJOR_VERSION)
+ 
+ #define MAJOR_VERSION_MASK	0x0f
+diff --git a/ptp4l.8 b/ptp4l.8
+index 4cb9adb..c59b0b4 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -813,7 +813,7 @@ The default is 128.
+ .TP
+ .B ptp_minor_version
+ This option sets the minorVersionPTP in the common PTP message header.
+-The default is 1.
++The default (specific to the installed linuxptp package) is 0.
+ 
+ .TP
+ .B refclock_sock_address

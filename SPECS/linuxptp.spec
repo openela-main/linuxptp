@@ -1,10 +1,10 @@
 %global _hardened_build 1
-%global testsuite_ver c66922
-%global clknetsim_ver c63e22
+%global testsuite_ver bf8ead
+%global clknetsim_ver 5d1dc0
 
 Name:		linuxptp
-Version:	3.1.1
-Release:	9%{?dist}
+Version:	4.2
+Release:	2%{?dist}
 Summary:	PTP implementation for Linux
 
 License:	GPLv2+
@@ -21,40 +21,20 @@ Source10:	https://github.com/mlichvar/linuxptp-testsuite/archive/%{testsuite_ver
 # simulator for test suite
 Source11:	https://github.com/mlichvar/clknetsim/archive/%{clknetsim_ver}/clknetsim-%{clknetsim_ver}.tar.gz
 
-# don't repeat some log messages in multi-port configuration
-Patch1:		linuxptp-logmsgs.patch
-# add option to set clockClass threshold
-Patch2:		linuxptp-classthreshold.patch
-# increase default TX timestamp timeout to 10 ms
-Patch3:		linuxptp-deftxtout.patch
+# allow old syntax of SET SUBSCRIBE_EVENTS_NP command
+Patch1:		linuxptp-subscribe.patch
+# disable warning messages about deprecated options
+Patch2:		linuxptp-deprecated.patch
+# revert default PTP version to 2.0 for better compatibility
+Patch3:		linuxptp-ptpver.patch
 # limit unicast message rate per address and grant duration
 Patch4:		linuxptp-ucastrate.patch
-# add read-only UDS port
-Patch5:		linuxptp-udsro.patch
-# fix quoting in ptp4l man page
-Patch7:		linuxptp-manfix.patch
-# close lstab file after use
-Patch8:		linuxptp-fclose.patch
-# fix handling of zero-length messages
-Patch9:		linuxptp-zerolength.patch
-# avoid unaligned pointers to packed members
-Patch10:	linuxptp-packalign.patch
-# make sanity clock check more reliable
-Patch11:	linuxptp-clockcheck.patch
-# add support for virtual clocks
+# fix ts2phc to handle large NMEA delay
+Patch5:		linuxptp-nmeadelay.patch
+# fix loading and reloading of leapfile
+Patch6:		linuxptp-lstab.patch
+# check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
-# handle PHC read failing with EBUSY in phc2sys
-Patch13:	linuxptp-phcerr.patch
-# add support for VLAN over bond
-Patch14:	linuxptp-vlanbond.patch
-# handle EINTR when waiting for transmit timestamp
-Patch15:	linuxptp-eintr.patch
-# check for unexpected changes in frequency offset
-Patch16:	linuxptp-freqcheck.patch
-# don't re-arm fault clearing timer on unrelated netlink events
-Patch17:	linuxptp-faultrearm.patch
-# clear pending errors on sockets
-Patch18:	linuxptp-soerror.patch
 
 BuildRequires:	gcc gcc-c++ make systemd
 
@@ -69,23 +49,7 @@ Supporting legacy APIs and other platforms is not a goal.
 
 %prep
 %setup -q -a 10 -a 11 -n %{name}-%{!?gitfullver:%{version}}%{?gitfullver}
-%patch1 -p1 -b .logmsgs
-%patch2 -p1 -b .classthreshold
-%patch3 -p1 -b .deftxtout
-%patch4 -p1 -b .ucastrate
-%patch5 -p1 -b .udsro
-%patch7 -p1 -b .manfix
-%patch8 -p1 -b .fclose
-%patch9 -p1 -b .zerolength
-%patch10 -p1 -b .packalign
-%patch11 -p1 -b .clockcheck
-%patch12 -p1 -b .vclock
-%patch13 -p1 -b .phcerr
-%patch14 -p1 -b .vlanbond
-%patch15 -p1 -b .eintr
-%patch16 -p1 -b .freqcheck
-%patch17 -p1 -b .faultrearm
-%patch18 -p1 -b .soerror
+%autopatch -p1
 mv linuxptp-testsuite-%{testsuite_ver}* testsuite
 mv clknetsim-%{clknetsim_ver}* testsuite/clknetsim
 
@@ -144,10 +108,18 @@ PATH=..:$PATH ./run
 %{_sbindir}/ptp4l
 %{_sbindir}/timemaster
 %{_sbindir}/ts2phc
+%{_sbindir}/tz2alt
 %{_mandir}/man5/*.5*
 %{_mandir}/man8/*.8*
 
 %changelog
+* Thu Feb 22 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-2
+- fix loading and reloading of leapfile
+
+* Tue Jan 30 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-1
+- update to 4.2 (RHEL-2026 RHEL-2342 RHEL-12182 RHEL-15929)
+- fix ts2phc to handle large NMEA delay (RHEL-23208)
+
 * Wed May 03 2023 Miroslav Lichvar <mlichvar@redhat.com> 3.1.1-9
 - clear pending errors on sockets (#2192559)
 

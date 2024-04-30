@@ -1,0 +1,23 @@
+commit 99603cf0ab2413d59ae91101429b18d9ced6f88f
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 11 11:29:34 2024 +0100
+
+    config: Disable warnings about deprecated options.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/config.c b/config.c
+index ad675c8..398b420 100644
+--- a/config.c
++++ b/config.c
+@@ -750,8 +750,10 @@ static void check_deprecated_options(const char **option)
+ 	}
+ 
+ 	if (new_option) {
++#if 0
+ 		fprintf(stderr, "option %s is deprecated, please use %s instead\n",
+ 				*option, new_option);
++#endif
+ 		*option = new_option;
+ 	}
+ }
