@@ -1,0 +1,29 @@
+commit 0404c1924254c9162222dd5000a140165d21250c
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 25 15:23:44 2024 +0100
+
+    ts2phc: Fix offset for NMEA delays over 0.5 seconds.
+    
+    The current code of ts2phc assumes that the NMEA RMC message is received
+    within 0.5 seconds of the pulse the timestamp in the message is refering
+    to. However, with most receivers NMEA messages are referenced to the
+    previous pulse. This causes a 1-second error in the measured offset for
+    receivers with delays over 0.5 seconds.
+    
+    Add a 0.5 second correction to map the whole interval between pulses to
+    the preceding pulse.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/ts2phc_nmea_pps_source.c b/ts2phc_nmea_pps_source.c
+index 3a4267d..274b70a 100644
+--- a/ts2phc_nmea_pps_source.c
++++ b/ts2phc_nmea_pps_source.c
+@@ -191,6 +191,7 @@ static int ts2phc_nmea_pps_source_getppstime(struct ts2phc_pps_source *src,
+ 		return -1;
+ 	}
+ 	rmc = tmv_add(rmc, duration_since_rmc);
++	rmc = tmv_add(rmc, nanoseconds_to_tmv(500000000));
+ 	utc_time = tmv_to_nanoseconds(rmc);
+ 	utc_time /= (int64_t) 1000000000;
+ 	*ts = tmv_to_timespec(rmc);

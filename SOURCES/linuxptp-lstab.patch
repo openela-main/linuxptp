@@ -1,0 +1,75 @@
+commit bbfaa1e253b889aeea97702bbbc87e731e0caf87
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 22 13:51:59 2024 +0100
+
+    lstab: Limit number of parsed leap seconds.
+    
+    The lstab structure has a fixed-size array for leap seconds
+    (currently 28 + 200). Don't read more leap seconds from the leapfile to
+    avoid corrupting memory.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/lstab.c b/lstab.c
+index 24add26..8e35504 100644
+--- a/lstab.c
++++ b/lstab.c
+@@ -137,7 +137,7 @@ static int lstab_read(struct lstab *lstab, const char *name)
+ 		fprintf(stderr, "failed to open '%s' for reading: %m\n", name);
+ 		return -1;
+ 	}
+-	while (1) {
++	while (index < N_LEAPS) {
+ 		if (!fgets(buf, sizeof(buf), fp)) {
+ 			break;
+ 		}
+
+commit 90ad2efc74b0f348fb6b417565b3ada7d161641b
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Feb 22 13:56:53 2024 +0100
+
+    lstab: Don't free lstab on update.
+    
+    The modification timestamp of the leapfile is checked with every
+    call of lstab_utc2tai(). If the file is modified, the provided lstab
+    structure is freed and a new one is allocated from the updated leapfile.
+    But the new lstab is not returned to the caller as the function doesn't
+    accept a pointer to the pointer to lstab. This causes reading from the
+    freed memory and leak of the newly allocated memory.
+    
+    Modify update_leapsecond_table() to read the updated leapfile into the
+    existing lstab structure instead of the reallocation.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/lstab.c b/lstab.c
+index 8e35504..357ed27 100644
+--- a/lstab.c
++++ b/lstab.c
+@@ -195,7 +195,6 @@ struct lstab *lstab_create(const char *filename)
+ 
+ int update_leapsecond_table(struct lstab *lstab)
+ {
+-	const char* leapfile;
+ 	struct stat statbuf;
+ 	int err;
+ 
+@@ -212,14 +211,14 @@ int update_leapsecond_table(struct lstab *lstab)
+ 		return 0;
+ 	}
+ 	printf("updating leap seconds file\n");
+-	leapfile = lstab->leapfile;
+-	lstab_destroy(lstab);
+ 
+-	lstab = lstab_create(leapfile);
+-	if (!lstab) {
++	if (lstab_read(lstab, lstab->leapfile)) {
++		lstab->length = 0;
+ 		return -1;
+ 	}
+ 
++	lstab->lsfile_mtime = statbuf.st_mtim.tv_sec;
++
+ 	return 0;
+ }
+ 
