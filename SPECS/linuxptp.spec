@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	4.2
-Release:	2%{?dist}
+Release:	2%{?dist}.2
 Summary:	PTP implementation for Linux
 
 License:	GPLv2+
@@ -33,6 +33,12 @@ Patch4:		linuxptp-ucastrate.patch
 Patch5:		linuxptp-nmeadelay.patch
 # fix loading and reloading of leapfile
 Patch6:		linuxptp-lstab.patch
+# fix ts2phc to correctly handle leap seconds
+Patch7:		linuxptp-nmealeap.patch
+# fix ts2phc to reset NMEA parser after RMC message
+Patch8:		linuxptp-nmeareset.patch
+# add holdover support to ts2phc
+Patch10:	linuxptp-holdover.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
 
@@ -113,6 +119,14 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
+* Thu Jul 25 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-2.el9_4.2
+- add holdover support to ts2phc (RHEL-50222)
+
+* Mon Jun 24 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-2.el9_4.1
+- rework NMEA delay patch to fix PPS edge rejection (RHEL-44677)
+- fix ts2phc to correctly handle leap seconds (RHEL-44679)
+- fix ts2phc to reset NMEA parser after RMC message (RHEL-44683)
+
 * Thu Feb 22 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-2
 - fix loading and reloading of leapfile
 
