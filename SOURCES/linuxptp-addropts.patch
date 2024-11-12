@@ -1,0 +1,176 @@
+commit 073faba77e8a82c54210941cee6023dc9e719329
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Apr 25 14:25:57 2024 +0200
+
+    udp+udp6: Make IP addresses configurable.
+    
+    Allow configuration of the multicast IPv4/IPv6 addresses, which can be
+    useful for testing. This complements the L2-specific ptp_dst_mac and
+    p2p_dst_mac options.
+    
+    [ RPC: removed unused #defines PTP_PRIMARY_MCAST_IPADDR and PTP_PDELAY_MCAST_IPADDR ]
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Signed-off-by: Richard Cochran <richardcochran@gmail.com>
+
+diff --git a/config.c b/config.c
+index d7775c0..c220a3e 100644
+--- a/config.c
++++ b/config.c
+@@ -299,6 +299,9 @@ struct config_item config_tab[] = {
+ 	GLOB_ITEM_INT("offsetScaledLogVariance", 0xffff, 0, UINT16_MAX),
+ 	PORT_ITEM_INT("operLogPdelayReqInterval", 0, INT8_MIN, INT8_MAX),
+ 	PORT_ITEM_INT("operLogSyncInterval", 0, INT8_MIN, INT8_MAX),
++	PORT_ITEM_STR("p2p_dst_ipv4", "224.0.0.107"),
++	PORT_ITEM_STR("p2p_dst_ipv6", "FF02:0:0:0:0:0:0:6B"),
++	PORT_ITEM_STR("p2p_dst_mac", "01:80:C2:00:00:0E"),
+ 	PORT_ITEM_INT("path_trace_enabled", 0, 0, 1),
+ 	PORT_ITEM_INT("phc_index", -1, -1, INT_MAX),
+ 	GLOB_ITEM_DBL("pi_integral_const", 0.0, 0.0, DBL_MAX),
+@@ -317,8 +320,9 @@ struct config_item config_tab[] = {
+ 	GLOB_ITEM_INT("priority1", 128, 0, UINT8_MAX),
+ 	GLOB_ITEM_INT("priority2", 128, 0, UINT8_MAX),
+ 	GLOB_ITEM_STR("productDescription", ";;"),
++	PORT_ITEM_STR("ptp_dst_ipv4", "224.0.1.129"),
++	PORT_ITEM_STR("ptp_dst_ipv6", "FF0E:0:0:0:0:0:0:181"),
+ 	PORT_ITEM_STR("ptp_dst_mac", "01:1B:19:00:00:00"),
+-	PORT_ITEM_STR("p2p_dst_mac", "01:80:C2:00:00:0E"),
+ 	GLOB_ITEM_INT("ptp_minor_version", 0, 0, 1),
+ 	GLOB_ITEM_STR("refclock_sock_address", "/var/run/refclock.ptp.sock"),
+ 	GLOB_ITEM_STR("revisionData", ";;"),
+diff --git a/configs/default.cfg b/configs/default.cfg
+index 8f94c16..54ce62a 100644
+--- a/configs/default.cfg
++++ b/configs/default.cfg
+@@ -94,6 +94,10 @@ write_phase_mode	0
+ # Transport options
+ #
+ transportSpecific	0x0
++ptp_dst_ipv4		224.0.1.129
++p2p_dst_ipv4		224.0.0.107
++ptp_dst_ipv6		FF0E:0:0:0:0:0:0:181
++p2p_dst_ipv6		FF02:0:0:0:0:0:0:6B
+ ptp_dst_mac		01:1B:19:00:00:00
+ p2p_dst_mac		01:80:C2:00:00:0E
+ udp_ttl			1
+diff --git a/ptp4l.8 b/ptp4l.8
+index c59b0b4..a4eb603 100644
+--- a/ptp4l.8
++++ b/ptp4l.8
+@@ -397,6 +397,27 @@ This value may be changed dynamically using the
+ POWER_PROFILE_SETTINGS_NP management message.
+ The default is "none".
+ 
++.TP
++.B ptp_dst_ipv4
++The IPv4 address to which PTP messages should be sent.
++Relevant only with UDPv4 transport. The default is 224.0.1.129.
++
++.TP
++.B p2p_dst_ipv4
++The IPv4 address to which peer delay messages should be sent.
++Relevant only with UDPv4 transport. The default is 224.0.0.107.
++
++.TP
++.B ptp_dst_ipv6
++The IPv6 address to which PTP messages should be sent.
++The second byte of the address is substituted with udp6_scope.
++Relevant only with UDPv6 transport. The default is FF0E:0:0:0:0:0:0:181.
++
++.TP
++.B p2p_dst_ipv6
++The IPv6 address to which peer delay messages should be sent.
++Relevant only with UDPv6 transport. The default is FF02:0:0:0:0:0:0:6B.
++
+ .TP
+ .B ptp_dst_mac
+ The MAC address to which PTP messages should be sent.
+diff --git a/udp.c b/udp.c
+index 7c9402e..38d0ec4 100644
+--- a/udp.c
++++ b/udp.c
+@@ -39,8 +39,6 @@
+ 
+ #define EVENT_PORT        319
+ #define GENERAL_PORT      320
+-#define PTP_PRIMARY_MCAST_IPADDR "224.0.1.129"
+-#define PTP_PDELAY_MCAST_IPADDR  "224.0.0.107"
+ 
+ struct udp {
+ 	struct transport t;
+@@ -157,6 +155,7 @@ static int udp_open(struct transport *t, struct interface *iface,
+ 	const char *name = interface_name(iface);
+ 	uint8_t event_dscp, general_dscp;
+ 	int efd, gfd, ttl;
++	char *str;
+ 
+ 	ttl = config_get_int(t->cfg, name, "udp_ttl");
+ 	udp->mac.len = 0;
+@@ -165,11 +164,17 @@ static int udp_open(struct transport *t, struct interface *iface,
+ 	udp->ip.len = 0;
+ 	sk_interface_addr(name, AF_INET, &udp->ip);
+ 
+-	if (!inet_aton(PTP_PRIMARY_MCAST_IPADDR, &mcast_addr[MC_PRIMARY]))
++	str = config_get_string(t->cfg, name, "ptp_dst_ipv4");
++	if (!inet_aton(str, &mcast_addr[MC_PRIMARY])) {
++		pr_err("invalid ptp_dst_ipv4 %s", str);
+ 		return -1;
++	}
+ 
+-	if (!inet_aton(PTP_PDELAY_MCAST_IPADDR, &mcast_addr[MC_PDELAY]))
++	str = config_get_string(t->cfg, name, "p2p_dst_ipv4");
++	if (!inet_aton(str, &mcast_addr[MC_PDELAY])) {
++		pr_err("invalid p2p_dst_ipv4 %s", str);
+ 		return -1;
++	}
+ 
+ 	efd = open_socket(name, mcast_addr, EVENT_PORT, ttl);
+ 	if (efd < 0)
+diff --git a/udp6.c b/udp6.c
+index bde1710..188d20e 100644
+--- a/udp6.c
++++ b/udp6.c
+@@ -40,10 +40,6 @@
+ #define EVENT_PORT        319
+ #define GENERAL_PORT      320
+ 
+-/* The 0x0e in second byte is substituted with udp6_scope at runtime. */
+-#define PTP_PRIMARY_MCAST_IP6ADDR "FF0E:0:0:0:0:0:0:181"
+-#define PTP_PDELAY_MCAST_IP6ADDR  "FF02:0:0:0:0:0:0:6B"
+-
+ enum { MC_PRIMARY, MC_PDELAY };
+ 
+ struct udp6 {
+@@ -167,6 +163,7 @@ static int udp6_open(struct transport *t, struct interface *iface,
+ 	const char *name = interface_name(iface);
+ 	uint8_t event_dscp, general_dscp;
+ 	int efd, gfd, hop_limit;
++	char *str;
+ 
+ 	hop_limit = config_get_int(t->cfg, name, "udp_ttl");
+ 	udp6->mac.len = 0;
+@@ -175,16 +172,20 @@ static int udp6_open(struct transport *t, struct interface *iface,
+ 	udp6->ip.len = 0;
+ 	sk_interface_addr(name, AF_INET6, &udp6->ip);
+ 
+-	if (1 != inet_pton(AF_INET6, PTP_PRIMARY_MCAST_IP6ADDR,
+-			   &udp6->mc6_addr[MC_PRIMARY]))
++	str = config_get_string(t->cfg, name, "ptp_dst_ipv6");
++	if (1 != inet_pton(AF_INET6, str, &udp6->mc6_addr[MC_PRIMARY])) {
++		pr_err("invalid ptp_dst_ipv6 %s", str);
+ 		return -1;
++	}
+ 
+ 	udp6->mc6_addr[MC_PRIMARY].s6_addr[1] = config_get_int(t->cfg, name,
+ 							       "udp6_scope");
+ 
+-	if (1 != inet_pton(AF_INET6, PTP_PDELAY_MCAST_IP6ADDR,
+-			   &udp6->mc6_addr[MC_PDELAY]))
++	str = config_get_string(t->cfg, name, "p2p_dst_ipv6");
++	if (1 != inet_pton(AF_INET6, str, &udp6->mc6_addr[MC_PDELAY])) {
++		pr_err("invalid p2p_dst_ipv6 %s", str);
+ 		return -1;
++	}
+ 
+ 	efd = open_socket_ipv6(name, udp6->mc6_addr, EVENT_PORT, &udp6->index,
+ 			       hop_limit);

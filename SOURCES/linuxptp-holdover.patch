@@ -202,7 +202,7 @@ index 4833ded..5dbde9b 100644
  };
  
  struct ts2phc_clock *ts2phc_clock_add(struct ts2phc_private *priv,
-commit 78c359ab2b108c87166f506a82481d7ff237dc8e
+commit bf237fd55d4983a42d9344890dd861f18bea70ca
 Author: Miroslav Lichvar <mlichvar@redhat.com>
 Date:   Thu Jul 25 12:43:59 2024 +0200
 
@@ -333,7 +333,7 @@ index bcc6f61..4c54576 100644
  .B ts2phc.nmea_remote_host, ts2phc.nmea_remote_port
  Specifies the remote host providing ToD information when using the
 
-commit 8dca6c102e8e1f01b8d73ff61a24ceef6b11732b
+commit 7734d2fe8ac52afaa233262548615f79021ae6ee
 Author: Miroslav Lichvar <mlichvar@redhat.com>
 Date:   Thu Jul 25 12:46:43 2024 +0200
 
