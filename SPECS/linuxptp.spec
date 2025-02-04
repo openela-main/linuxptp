@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	4.2
-Release:	3%{?dist}
+Release:	3%{?dist}.1
 Summary:	PTP implementation for Linux
 
 License:	GPLv2+
@@ -41,8 +41,12 @@ Patch8:		linuxptp-nmeareset.patch
 Patch9:		linuxptp-addropts.patch
 # add holdover support to ts2phc
 Patch10:	linuxptp-holdover.patch
+# add option to ts2phc to specify minimum expected NMEA delay
+Patch11:	linuxptp-nmeadelay2.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
+# don't require -O option without -a and -w in phc2sys
+Patch13:	linuxptp-nowait.patch
 
 BuildRequires:	gcc gcc-c++ make systemd
 
@@ -121,6 +125,10 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
+* Thu Jan 02 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.2-3.el9_5.1
+- add option to ts2phc to specify minimum expected NMEA delay (RHEL-70168)
+- don't require -O option without -a and -w in phc2sys (RHEL-70678)
+
 * Thu Jul 25 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-3
 - rework NMEA delay patch to fix PPS edge rejection (RHEL-39387)
 - fix ts2phc to correctly handle leap seconds (RHEL-40216)
