@@ -1,4 +1,81 @@
-commit e3867eb1ce2282f9ac4cc729a3b1beb74bb017d6
+commit a3420abab9eec2dc7b35e0e1e9f37ebeffc87655
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Nov 26 15:10:32 2024 +0100
+
+    pmc_agent: Use longer update interval when not subscribed.
+    
+    When phc2sys is started with the -w option, the pmc agent is not
+    subscribed to events by the pmc_agent_subscribe() function, which also
+    sets the update interval. The update interval in this case is zero,
+    which means the pmc agent is trying to update the currentUtcOffset value
+    on every call of pmc_agent_update(), i.e. on every clock update in
+    phc2sys.
+    
+    Set a default update interval of 60 seconds to reduce the rate of
+    pmc requests.
+    
+    Fixes: e3ca7ea90a9e ("pmc_agent: Make update interval configurable.")
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Reviewed-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/pmc_agent.c b/pmc_agent.c
+index d1a3367..663adc0 100644
+--- a/pmc_agent.c
++++ b/pmc_agent.c
+@@ -33,6 +33,9 @@
+ #define UPDATES_PER_SUBSCRIPTION 3
+ #define MIN_UPDATE_INTERVAL 10
+ 
++/* Update interval if the agent not subscribed, just polling the UTC offset */
++#define DEFAULT_UPDATE_INTERVAL 60
++
+ struct pmc_agent {
+ 	struct pmc *pmc;
+ 	uint64_t pmc_last_update;
+@@ -253,6 +256,7 @@ int init_pmc_node(struct config *cfg, struct pmc_agent *node, const char *uds,
+ 	}
+ 	node->recv_subscribed = recv_subscribed;
+ 	node->recv_context = context;
++	node->update_interval = DEFAULT_UPDATE_INTERVAL * NS_PER_SEC;
+ 
+ 	return 0;
+ }
+
+commit 03ab6793abf665039b25319f0f4ad7ce03452874
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Nov 26 15:10:33 2024 +0100
+
+    phc2sys: Don't disable pmc agent with -s -d -w options.
+    
+    When phc2sys is started with -s and -d options to combine a PPS device
+    and PHC device as a time source, but without an offset specified by
+    the -O option, the pmc agent is disabled after waiting for ptp4l to have
+    a port in a synchronized state. This prevents phc2sys from following
+    changes in the currentUtcOffset value.
+    
+    Disable the pmc agent only if no PHC device is specified by the -s
+    option, i.e. there are no PHC readings to which the UTC offset could be
+    applied.
+    
+    Fixes: 5f1b419c4102 ("phc2sys: Replace magical test with a proper test.")
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Reviewed-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index d09cb53..c98ecec 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -1594,7 +1594,7 @@ int main(int argc, char *argv[])
+ 
+ 		if (domains[0].forced_sync_offset ||
+ 		    !phc2sys_using_systemclock(&domains[0]) ||
+-		    hardpps_configured(pps_fd)) {
++		    (hardpps_configured(pps_fd) && !src_name)) {
+ 			pmc_agent_disable(domains[0].agent);
+ 		}
+ 	}
+
+commit 1e25a62e65e07f2cc9e1c390895f0a940d307a25
 Author: Miroslav Lichvar <mlichvar@redhat.com>
 Date:   Tue Nov 26 15:10:34 2024 +0100
 
@@ -21,10 +98,10 @@ Date:   Tue Nov 26 15:10:34 2024 +0100
     Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
 
 diff --git a/phc2sys.8 b/phc2sys.8
-index df0608a..5ca467d 100644
+index 762a1b1..3246c8f 100644
 --- a/phc2sys.8
 +++ b/phc2sys.8
-@@ -161,7 +161,10 @@ minimize the error caused by random delays in scheduling and bus utilization.
+@@ -164,7 +164,10 @@ minimize the error caused by random delays in scheduling and bus utilization.
  The default is 5.
  .TP
  .BI \-O " offset"
@@ -37,10 +114,10 @@ index df0608a..5ca467d 100644
  .B \-a
  option.  See
 diff --git a/phc2sys.c b/phc2sys.c
-index 1745558..d8b0991 100644
+index c98ecec..ddd0a6a 100644
 --- a/phc2sys.c
 +++ b/phc2sys.c
-@@ -1406,12 +1406,6 @@ int main(int argc, char *argv[])
+@@ -1452,12 +1452,6 @@ int main(int argc, char *argv[])
  		goto bad_usage;
  	}
  
@@ -53,7 +130,7 @@ index 1745558..d8b0991 100644
  	if (hardpps_configured(pps_fd) && (dst_cnt != 1 ||
  	    strcmp(dst_names[0], "CLOCK_REALTIME"))) {
  		fprintf(stderr,
-@@ -1501,7 +1495,7 @@ int main(int argc, char *argv[])
+@@ -1559,7 +1553,7 @@ int main(int argc, char *argv[])
  
  	r = -1;
  
@@ -62,7 +139,7 @@ index 1745558..d8b0991 100644
  		snprintf(uds_local, sizeof(uds_local),
  			 "/var/run/phc2sys.%d", getpid());
  
-@@ -1516,7 +1510,7 @@ int main(int argc, char *argv[])
+@@ -1574,7 +1568,7 @@ int main(int argc, char *argv[])
  				  phc2sys_recv_subscribed, &domains[0]))
  			goto end;
  

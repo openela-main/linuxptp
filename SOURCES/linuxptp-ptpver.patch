@@ -1,4 +1,4 @@
-commit 6e480c9572925a4ea8aac45a10a306e0c4e509a9
+commit daa82cda8318edd6a8e75ef46d0ed065445c8922
 Author: Miroslav Lichvar <mlichvar@redhat.com>
 Date:   Thu Jan 11 11:33:54 2024 +0100
 
@@ -7,33 +7,33 @@ Date:   Thu Jan 11 11:33:54 2024 +0100
     Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
 
 diff --git a/config.c b/config.c
-index 398b420..d7775c0 100644
+index 4a28efb..cbff976 100644
 --- a/config.c
 +++ b/config.c
-@@ -319,7 +319,7 @@ struct config_item config_tab[] = {
- 	GLOB_ITEM_STR("productDescription", ";;"),
+@@ -347,7 +347,7 @@ struct config_item config_tab[] = {
+ 	PORT_ITEM_STR("ptp_dst_ipv4", "224.0.1.129"),
+ 	PORT_ITEM_STR("ptp_dst_ipv6", "FF0E:0:0:0:0:0:0:181"),
  	PORT_ITEM_STR("ptp_dst_mac", "01:1B:19:00:00:00"),
- 	PORT_ITEM_STR("p2p_dst_mac", "01:80:C2:00:00:0E"),
 -	GLOB_ITEM_INT("ptp_minor_version", 1, 0, 1),
 +	GLOB_ITEM_INT("ptp_minor_version", 0, 0, 1),
  	GLOB_ITEM_STR("refclock_sock_address", "/var/run/refclock.ptp.sock"),
  	GLOB_ITEM_STR("revisionData", ";;"),
- 	GLOB_ITEM_INT("sanity_freq_limit", 200000000, 0, INT_MAX),
+ 	GLOB_ITEM_STR("sa_file", NULL),
 diff --git a/configs/default.cfg b/configs/default.cfg
-index 0c7661c..8f94c16 100644
+index c3ad618..768eef8 100644
 --- a/configs/default.cfg
 +++ b/configs/default.cfg
-@@ -46,7 +46,7 @@ power_profile.2011.networkTimeInaccuracy	-1
+@@ -47,7 +47,7 @@ power_profile.2011.networkTimeInaccuracy	-1
  power_profile.2017.totalTimeInaccuracy		-1
  power_profile.grandmasterID			0
  power_profile.version				none
--ptp_minor_version       1
-+ptp_minor_version       0
- #
- # Run time options
+-ptp_minor_version	1
++ptp_minor_version	0
+ spp			-1
+ active_key_id		0
  #
 diff --git a/msg.h b/msg.h
-index 9c80f45..786ddc7 100644
+index 58c2287..d2658c9 100644
 --- a/msg.h
 +++ b/msg.h
 @@ -32,7 +32,7 @@
@@ -45,16 +45,44 @@ index 9c80f45..786ddc7 100644
  #define PTP_VERSION		(PTP_MINOR_VERSION << 4 | PTP_MAJOR_VERSION)
  
  #define MAJOR_VERSION_MASK	0x0f
+diff --git a/port.c b/port.c
+index db35a44..7f945ac 100644
+--- a/port.c
++++ b/port.c
+@@ -3696,7 +3696,7 @@ struct port *port_open(const char *phc_device,
+ 		pr_err("%s: spp not supported on one-step ports", p->log_name);
+ 		goto err_uc_service;
+ 	}
+-	if (port_has_security(p) && (config_get_int(cfg, NULL, "ptp_minor_version") < 1)) {
++	if (port_has_security(p) && ptp_hdr_ver >> 4 < 1) {
+ 		pr_err("%s: spp needs at least PTPv2.1", p->log_name);
+ 		goto err_uc_service;
+ 	}
 diff --git a/ptp4l.8 b/ptp4l.8
-index 4cb9adb..c59b0b4 100644
+index 87900e3..28cc4c9 100644
 --- a/ptp4l.8
 +++ b/ptp4l.8
-@@ -813,7 +813,7 @@ The default is 128.
+@@ -900,7 +900,8 @@ The default is 128.
  .TP
  .B ptp_minor_version
  This option sets the minorVersionPTP in the common PTP message header.
 -The default is 1.
-+The default (specific to the installed linuxptp package) is 0.
++The default (specific to the installed linuxptp package) is 0, but setting
++\fBsa_file\fR forces the version to 1.
  
  .TP
  .B refclock_sock_address
+diff --git a/ptp4l.c b/ptp4l.c
+index ac2ef96..0d54d6c 100644
+--- a/ptp4l.c
++++ b/ptp4l.c
+@@ -194,6 +194,9 @@ int main(int argc, char *argv[])
+ 	sk_hwts_filter_mode = config_get_int(cfg, NULL, "hwts_filter");
+ 
+ 	ptp_hdr_ver = config_get_int(cfg, NULL, "ptp_minor_version");
++	/* Override patched default for spp, which requires PTPv2.1 */
++	if (ptp_hdr_ver < 1 && config_get_string(cfg, NULL, "sa_file"))
++		ptp_hdr_ver = 1;
+ 	ptp_hdr_ver = (ptp_hdr_ver << 4) | PTP_MAJOR_VERSION;
+ 
+ 	if (sad_create(cfg)) {

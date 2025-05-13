@@ -1,16 +1,16 @@
 %global _hardened_build 1
-%global testsuite_ver bf8ead
-%global clknetsim_ver 5d1dc0
+%global testsuite_ver d27dbd
+%global clknetsim_ver 64df92
 
 Name:		linuxptp
-Version:	4.2
-Release:	3%{?dist}.1
+Version:	4.4
+Release:	1%{?dist}
 Summary:	PTP implementation for Linux
 
-License:	GPLv2+
-URL:		http://linuxptp.sourceforge.net/
+License:	GPL-2.0-or-later
+URL:		https://www.linuxptp.org/
 
-Source0:	https://downloads.sourceforge.net/%{name}/%{name}-%{version}.tgz
+Source0:	https://downloads.nwtime.org/%{name}/%{name}-%{version}.tgz
 Source1:	phc2sys.service
 Source2:	ptp4l.service
 Source3:	timemaster.service
@@ -21,34 +21,22 @@ Source10:	https://github.com/mlichvar/linuxptp-testsuite/archive/%{testsuite_ver
 # simulator for test suite
 Source11:	https://github.com/mlichvar/clknetsim/archive/%{clknetsim_ver}/clknetsim-%{clknetsim_ver}.tar.gz
 
-# allow old syntax of SET SUBSCRIBE_EVENTS_NP command
-Patch1:		linuxptp-subscribe.patch
 # disable warning messages about deprecated options
 Patch2:		linuxptp-deprecated.patch
 # revert default PTP version to 2.0 for better compatibility
 Patch3:		linuxptp-ptpver.patch
 # limit unicast message rate per address and grant duration
 Patch4:		linuxptp-ucastrate.patch
-# fix ts2phc to handle large NMEA delay
-Patch5:		linuxptp-nmeadelay.patch
-# fix loading and reloading of leapfile
-Patch6:		linuxptp-lstab.patch
-# fix ts2phc to correctly handle leap seconds
-Patch7:		linuxptp-nmealeap.patch
-# fix ts2phc to reset NMEA parser after RMC message
-Patch8:		linuxptp-nmeareset.patch
-# add options to configure multicast IP addresses
-Patch9:		linuxptp-addropts.patch
-# add holdover support to ts2phc
-Patch10:	linuxptp-holdover.patch
-# add option to ts2phc to specify minimum expected NMEA delay
-Patch11:	linuxptp-nmeadelay2.patch
+# fix port-specific ptp/p2p_dst_ipv4 configuration
+Patch5:		linuxptp-udpaddr.patch
+# support static sink clocks in phc2sys automatic mode
+Patch6:		linuxptp-staticauto.patch
+# don't require -O option without -a and -w in phc2sys
+Patch7:		linuxptp-nowait.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
-# don't require -O option without -a and -w in phc2sys
-Patch13:	linuxptp-nowait.patch
 
-BuildRequires:	gcc gcc-c++ make systemd
+BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
 
 %{?systemd_requires}
 
@@ -62,6 +50,10 @@ Supporting legacy APIs and other platforms is not a goal.
 %prep
 %setup -q -a 10 -a 11 -n %{name}-%{!?gitfullver:%{version}}%{?gitfullver}
 %autopatch -p1
+
+# disable nettle support in favor of gnutls
+sed -i 's|find .*"nettle"|true|' incdefs.sh
+
 mv linuxptp-testsuite-%{testsuite_ver}* testsuite
 mv clknetsim-%{clknetsim_ver}* testsuite/clknetsim
 
@@ -125,9 +117,11 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
-* Thu Jan 02 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.2-3.el9_5.1
-- add option to ts2phc to specify minimum expected NMEA delay (RHEL-70168)
-- don't require -O option without -a and -w in phc2sys (RHEL-70678)
+* Tue Dec 03 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1
+- update to 4.4 (RHEL-58213 RHEL-57040)
+- fix port-specific ptp/p2p_dst_ipv4 configuration (RHEL-60027)
+- support static sink clocks in phc2sys automatic mode (RHEL-62864)
+- don't require -O option without -a and -w in phc2sys (RHEL-69138)
 
 * Thu Jul 25 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.2-3
 - rework NMEA delay patch to fix PPS edge rejection (RHEL-39387)
