@@ -1,0 +1,149 @@
+commit f20e568cb2bf3b0ea6105e5624409f02fb9aa2bc
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 9 15:46:05 2025 +0100
+
+    ts2phc: Add option for external reference in automatic mode.
+    
+    ts2phc running in the automatic mode assumes that the PPS source is one
+    of the PHCs used by ptp4l. That doesn't always have to be the case. Add
+    "external_pps" option to use the non-automatic-mode reading of the
+    source timestamp and don't mark sink clocks as targets if they are
+    synchronized by ptp4l.
+    
+    The use case is holdover with an externally controlled stabilized clock.
+    The clock is synchronized by an external process to the PHC when it's
+    synchronized by ptp4l and the PHC is synchronized to the external clock
+    by ts2phc when not synchronized by ptp4l. Multiple PHCs can be connected
+    to the external clock to make a JBOD boundary clock.
+    
+    Don't require the PHC that is synchronized by ptp4l to be receiving the
+    PPS signal (providing timestamps) to make it possible to switch the PPS
+    direction to synchronize the external clock if there is only one
+    usable channel.
+    
+    (This is a RHEL-specific downstream patch using "ts2phc.rh_external_pps"
+    name for the option to make it clear it's considered experimental.)
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/config.c b/config.c
+index cbff976..fedc3a0 100644
+--- a/config.c
++++ b/config.c
+@@ -368,6 +368,7 @@ struct config_item config_tab[] = {
+ 	GLOB_ITEM_ENU("time_stamping", TS_HARDWARE, timestamping_enu),
+ 	PORT_ITEM_INT("transportSpecific", 0, 0, 0x0F),
+ 	PORT_ITEM_INT("ts2phc.channel", 0, 0, INT_MAX),
++	GLOB_ITEM_INT("ts2phc.rh_external_pps", 0, 0, 1),
+ 	PORT_ITEM_INT("ts2phc.extts_correction", 0, INT_MIN, INT_MAX),
+ 	PORT_ITEM_ENU("ts2phc.extts_polarity", PTP_RISING_EDGE, extts_polarity_enu),
+ 	PORT_ITEM_INT("ts2phc.holdover", 0, 0, INT_MAX),
+diff --git a/ts2phc.8 b/ts2phc.8
+index f17ed71..d57402c 100644
+--- a/ts2phc.8
++++ b/ts2phc.8
+@@ -287,6 +287,20 @@ the SERVO_LOCKED_STABLE state. The servo state needs be enabled by the
+ \fB-a\fP option and when \fBts2phc.extts_polarity\fP is set to \fIboth\fP.
+ The default is 0 (disabled).
+ 
++.TP
++.B ts2phc.rh_external_pps
++This is a RHEL-specific experimental option which can be renamed,
++removed, or the functionality changed, in a future minor update.
++
++It enables an external reference with the \fB-a\fP option. If set to 1, ts2phc
++will assume the source of the PPS signal is a different clock from the PHCs
++used by ptp4l (configured with the \fBboundary_clock_jbod\fP option). The use
++case is a holdover using an externally controlled stabilized clock, which is
++expected to be synchronized to the PHC that is synchronized by ptp4l, and
++running free when ptp4l is not synchronizing any of the PHCs. Note that it is a
++different holdover than the one enabled by the \fBts2phc.holdover\fP option
++below. The default is 0 (disabled).
++
+ .TP
+ .B ts2phc.nmea_delay
+ Specifies the minimum expected delay of NMEA RMC messages in nanoseconds.
+diff --git a/ts2phc.c b/ts2phc.c
+index 39d31b6..5448496 100644
+--- a/ts2phc.c
++++ b/ts2phc.c
+@@ -348,18 +348,26 @@ static void ts2phc_reconfigure(struct ts2phc_private *priv)
+ 			}
+ 			num_target_clocks++;
+ 			break;
+-		case PS_UNCALIBRATED:
+-			num_ref_clocks++;
+-			break;
+ 		case PS_SLAVE:
+ 			ref_clk = c;
++			/* Fall through */
++		case PS_UNCALIBRATED:
+ 			num_ref_clocks++;
++			if (priv->external_pps && c->is_target) {
++				pr_info("unselecting %s for synchronization",
++					c->name);
++				c->is_target = false;
++			}
+ 			break;
+ 		default:
+ 			break;
+ 		}
+ 		last = c;
+ 	}
++	if (priv->external_pps) {
++		pr_info("assuming external reference clock");
++		return;
++	}
+ 	if (num_target_clocks >= 1 && !ref_clk) {
+ 		priv->ref_clock = last;
+ 		priv->ref_clock->is_target = false;
+@@ -447,7 +455,7 @@ static void ts2phc_synchronize_clocks(struct ts2phc_private *priv, int autocfg)
+ 	struct ts2phc_clock *c;
+ 	int holdover, valid;
+ 
+-	if (autocfg) {
++	if (autocfg && !priv->external_pps) {
+ 		if (!priv->ref_clock) {
+ 			pr_debug("no reference clock, skipping");
+ 			return;
+@@ -787,6 +795,8 @@ int main(int argc, char *argv[])
+ 		return -1;
+ 	}
+ 
++	priv.external_pps = config_get_int(cfg, NULL, "ts2phc.rh_external_pps");
++
+ 	priv.holdover_length = config_get_int(cfg, NULL, "ts2phc.holdover");
+ 	priv.holdover_start = 0;
+ 
+diff --git a/ts2phc.h b/ts2phc.h
+index 5dbde9b..63e6122 100644
+--- a/ts2phc.h
++++ b/ts2phc.h
+@@ -52,6 +52,7 @@ struct ts2phc_private {
+ 	struct config *cfg;
+ 	struct pmc_agent *agent;
+ 	struct ts2phc_clock *ref_clock;
++	bool external_pps;
+ 	bool state_changed;
+ 	LIST_HEAD(port_head, ts2phc_port) ports;
+ 	LIST_HEAD(clock_head, ts2phc_clock) clocks;
+diff --git a/ts2phc_pps_sink.c b/ts2phc_pps_sink.c
+index af34e39..9076de9 100644
+--- a/ts2phc_pps_sink.c
++++ b/ts2phc_pps_sink.c
+@@ -441,6 +441,15 @@ int ts2phc_pps_sink_poll(struct ts2phc_private *priv)
+ 		all_sinks_have_events = true;
+ 
+ 		for (i = 0; i < priv->n_sinks; i++) {
++			/*
++			 * In the external PPS mode don't require non-target
++			 * clocks to be receiving PPS to allow switching the
++			 * PPS direction to synchronize the external clock.
++			 */
++			if (priv->external_pps &&
++			    !polling_array->sink[i]->clock->is_target)
++				continue;
++
+ 			if (!polling_array->collected_events[i]) {
+ 				all_sinks_have_events = false;
+ 				break;

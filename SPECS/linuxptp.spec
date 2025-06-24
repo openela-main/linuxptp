@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	1%{?dist}
+Release:	1%{?dist}.2
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -33,6 +33,10 @@ Patch5:		linuxptp-udpaddr.patch
 Patch6:		linuxptp-staticauto.patch
 # don't require -O option without -a and -w in phc2sys
 Patch7:		linuxptp-nowait.patch
+# add experimental option for external PPS in ts2phc automatic mode
+Patch8:		linuxptp-externalpps.patch
+# add command to set external grandmaster properties
+Patch9:		linuxptp-externalgm.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
 
@@ -117,6 +121,13 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
+* Wed May 14 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1.el9_6.2
+- add command to set external grandmaster properties (RHEL-91297)
+
+* Tue May 06 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1.el9_6.1
+- add experimental option for external PPS in ts2phc automatic mode
+  (RHEL-89604)
+
 * Tue Dec 03 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1
 - update to 4.4 (RHEL-58213 RHEL-57040)
 - fix port-specific ptp/p2p_dst_ipv4 configuration (RHEL-60027)
