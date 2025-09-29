@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	1%{?dist}.2
+Release:	1%{?dist}.4
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -39,6 +39,8 @@ Patch8:		linuxptp-externalpps.patch
 Patch9:		linuxptp-externalgm.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
+# handle missing pulses in ts2phc
+Patch13:	linuxptp-ppsmiss.patch
 
 BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
 
@@ -121,6 +123,12 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
+* Tue Sep 23 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1.el9_6.4
+- rebuild
+
+* Tue Sep 02 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1.el9_6.3
+- handle missing pulses in ts2phc (RHEL-112342)
+
 * Wed May 14 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-1.el9_6.2
 - add command to set external grandmaster properties (RHEL-91297)
 
