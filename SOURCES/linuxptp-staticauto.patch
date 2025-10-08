@@ -1,0 +1,302 @@
+commit e57fe1786ed17e8f0a37d9319bde53c9985ed656
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Oct 17 15:05:21 2024 +0200
+
+    pmc: Avoid race conditions in agent update.
+    
+    The pmc_agent_update() function updates the subscription to
+    notifications and also the current UTC offset. It uses a timeout of 0
+    to avoid blocking. When the pmc client sends the first request, the
+    response from ptp4l may not come quickly enough to be received in the
+    same run_pmc() call. It then sends the other request and checks for the
+    response. If it is the response to the first request, it will be ignored.
+    The update works correctly only if both responses are quick enough to be
+    received in the same call, or are both slow enough that they are
+    received in the next call of the pmc_agent_update() function.
+    
+    The function needs to be called a random number of times in order to
+    finish one update. If the mismatch between requests and responses
+    happened consistently, the agent would never reach the up-to-date state
+    and phc2sys would not enter the main synchronization loop.
+    
+    Split the update into two phases, where only one thing is updated at a
+    time. The function now needs to be called at most 3 times to update both
+    the subscription and UTC offset, assuming it is not interrupted by
+    another request outside of the agent's update.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Reviewed-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/pmc_agent.c b/pmc_agent.c
+index 86b6ee6..d1a3367 100644
+--- a/pmc_agent.c
++++ b/pmc_agent.c
+@@ -37,6 +37,7 @@ struct pmc_agent {
+ 	struct pmc *pmc;
+ 	uint64_t pmc_last_update;
+ 	uint64_t update_interval;
++	int update_phase;
+ 
+ 	struct defaultDS dds;
+ 	bool dds_valid;
+@@ -427,16 +428,27 @@ int pmc_agent_update(struct pmc_agent *node)
+ 	ts = tp.tv_sec * NS_PER_SEC + tp.tv_nsec;
+ 
+ 	if (ts - node->pmc_last_update >= node->update_interval) {
+-		if (node->stay_subscribed) {
+-			renew_subscription(node, 0);
+-		}
+-		if (!pmc_agent_query_utc_offset(node, 0)) {
++		switch (node->update_phase) {
++		case 0:
++			if (node->stay_subscribed &&
++			    renew_subscription(node, 0))
++				break;
++			node->update_phase++;
++			/* Fall through */
++		case 1:
++			if (pmc_agent_query_utc_offset(node, 0))
++				break;
++			node->update_phase++;
++			/* Fall through */
++		default:
+ 			node->pmc_last_update = ts;
++			node->update_phase = 0;
++			break;
+ 		}
++	} else {
++		run_pmc(node, 0, -1, &msg);
+ 	}
+ 
+-	run_pmc(node, 0, -1, &msg);
+-
+ 	return 0;
+ }
+ 
+
+commit 341cdd74c1623cdf97c519abec7312ac11baea4d
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Oct 17 15:05:22 2024 +0200
+
+    phc2sys: Wait until pmc agent is subscribed.
+    
+    When phc2sys is configured with multiple domains, different domains may
+    have their pmc agent subscribed after different number of calls of the
+    pmc_agent_update() function depending on how quickly responses from
+    ptp4l are received. If one domain triggers reconfiguration and the other
+    domain does not have its agent subscribed yet, it will not have any of
+    its clocks synchronized until a port changes state and triggers another
+    reconfiguration of the domain.
+    
+    To avoid this problem, wait for each domain to have its agent subscribed
+    before entering the main synchronization loop. Use a 10ms update
+    interval to speed up the start of phc2sys.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Reviewed-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index 6113539..47e896e 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -962,6 +962,12 @@ static int auto_init_ports(struct domain *domain)
+ 		return -1;
+ 	}
+ 
++	while (!pmc_agent_is_subscribed(domain->agent)) {
++		usleep(10000);
++		if (pmc_agent_update(domain->agent) < 0)
++			return -1;
++	}
++
+ 	for (i = 1; i <= number_ports; i++) {
+ 		err = pmc_agent_query_port_properties(domain->agent, 1000, i,
+ 						      &state, &timestamping,
+
+commit a6cab9f888f88edab28e90d57a5368bbb83f6702
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Oct 24 15:24:07 2024 +0200
+
+    phc2sys: Keep clocks in command-line or ptp4l order.
+    
+    When adding a new clock to the domain, add it to the end of the list to
+    keep them in the same order as specified on the command line or the port
+    order of ptp4l.
+    
+    This will be needed by new code in the domain reconfiguration expecting
+    the order of reinitialized clocks to be the same as in which they were
+    added to the domain.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+    Reviewed-by: Jacob Keller <jacob.e.keller@intel.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index 47e896e..bf36c38 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -161,7 +161,7 @@ static struct servo *servo_add(struct domain *domain,
+ static struct clock *clock_add(struct domain *domain, const char *device,
+ 			       int phc_index)
+ {
+-	struct clock *c;
++	struct clock *c, *c2;
+ 	clockid_t clkid = CLOCK_INVALID;
+ 	char phc_device[19];
+ 
+@@ -217,7 +217,19 @@ static struct clock *clock_add(struct domain *domain, const char *device,
+ 		c->sysoff_method = sysoff_probe(CLOCKID_TO_FD(clkid),
+ 						domain->phc_readings);
+ 
+-	LIST_INSERT_HEAD(&domain->clocks, c, list);
++	/* Add the clock to the end of the list to keep them in the
++	   command-line or ptp4l order */
++	if (LIST_EMPTY(&domain->clocks)) {
++		LIST_INSERT_HEAD(&domain->clocks, c, list);
++	} else {
++		LIST_FOREACH(c2, &domain->clocks, list) {
++			if (LIST_NEXT(c2, list))
++				continue;
++			LIST_INSERT_AFTER(c2, c, list);
++			break;
++		}
++	}
++
+ 	return c;
+ }
+ 
+
+commit 5d2aeb54054453570014715be4445da80da57101
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Oct 24 15:24:08 2024 +0200
+
+    phc2sys: Allow static sink clocks in automatic mode.
+    
+    Allow the -c option to be used together with the -a option. Add the
+    specified clocks to the first domain, where they will stay in the master
+    state and be synchronized when a source is available in the same domain
+    or other domains.
+    
+    Mark the clocks added by -c as static and skip them in the domain
+    reconfiguration if they duplicate a clock following a ptp4l port.
+    
+    A use case is synchronization of clocks of backup interfaces in an
+    active-backup bond to minimize the observed offset when the active
+    interface is switched. ptp4l tracks the active interface, which is
+    followed by the automatic mode of phc2sys. All interfaces included in
+    the bond are specified by the -c option to keep them all synchronized to
+    the same source. The interface which duplicates the current active
+    interface provided by ptp4l is skipped.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/phc2sys.8 b/phc2sys.8
+index dd97a70..762a1b1 100644
+--- a/phc2sys.8
++++ b/phc2sys.8
+@@ -117,10 +117,13 @@ should no longer be used.
+ .TP
+ .BI \-c " device"
+ Specify the time sink by device (e.g. /dev/ptp1) or interface (e.g. eth1) or
+-by  name. The default is CLOCK_REALTIME (the system clock). Not compatible
+-with the
++by name. If used together with the
+ .B \-a
+-option. This option may be given up to 128 times.
++option, it is an additional sink clock added to the clocks provided by the
++first ptp4l instance (if
++.B \-z
++is specified multiple times). Duplicated clocks are allowed. The default is
++CLOCK_REALTIME (the system clock). This option may be given up to 128 times.
+ .TP
+ .BI \-E " servo"
+ Specify which clock servo should be used. Valid values are pi for a PI
+diff --git a/phc2sys.c b/phc2sys.c
+index bf36c38..d09cb53 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -79,6 +79,7 @@ struct clock {
+ 	int dest_only;
+ 	int state;
+ 	int new_state;
++	int static_state;
+ 	int sync_offset;
+ 	int leap_set;
+ 	int utc_offset_set;
+@@ -391,6 +392,18 @@ static struct clock *find_dst_clock(struct domain *domain,
+ 	return c;
+ }
+ 
++static struct clock *find_nonstatic_clock(struct domain *domain,
++					  int phc_index)
++{
++	struct clock *c = NULL;
++	LIST_FOREACH(c, &domain->clocks, list) {
++		if (!c->static_state && c->phc_index == phc_index) {
++			break;
++		}
++	}
++	return c;
++}
++
+ static int reconfigure_domain(struct domain *domain)
+ {
+ 	struct clock *c, *src = NULL, *dup = NULL;
+@@ -422,6 +435,17 @@ static int reconfigure_domain(struct domain *domain)
+ 			c->new_state = 0;
+ 		}
+ 
++		/* Ignore the clock if its state is not following ptp4l and has
++		   the same PHC index as a clock that is following ptp4l */
++		if (c->static_state) {
++			dup = find_nonstatic_clock(domain, c->phc_index);
++			if (dup) {
++				pr_info("skipping static %s: %s has the same clock",
++					c->device, dup->device);
++				continue;
++			}
++		}
++
+ 		switch (c->state) {
+ 		case PS_FAULTY:
+ 		case PS_DISABLED:
+@@ -436,6 +460,8 @@ static int reconfigure_domain(struct domain *domain)
+ 				dst_cnt++;
+ 				LIST_INSERT_HEAD(&domain->dst_clocks,
+ 						 c, dst_list);
++				if (c->sanity_check)
++					clockcheck_reset(c->sanity_check);
+ 			} else {
+ 				pr_info("skipping %s: %s has the same clock "
+ 					"and is already selected",
+@@ -1128,6 +1154,7 @@ static int phc2sys_static_dst_configuration(struct domain *domain,
+ 		return -1;
+ 	}
+ 	dst->state = PS_MASTER;
++	dst->static_state = 1;
+ 	LIST_INSERT_HEAD(&domain->dst_clocks, dst, dst_list);
+ 
+ 	return 0;
+@@ -1407,7 +1434,7 @@ int main(int argc, char *argv[])
+ 		dst_names[dst_cnt++] = "CLOCK_REALTIME";
+ 	}
+ 
+-	if (autocfg && (src_name || dst_cnt > 0 || hardpps_configured(pps_fd) ||
++	if (autocfg && (src_name || hardpps_configured(pps_fd) ||
+ 			wait_sync || settings.forced_sync_offset)) {
+ 		fprintf(stderr,
+ 			"autoconfiguration cannot be mixed with manual config options.\n");
+@@ -1506,6 +1533,14 @@ int main(int argc, char *argv[])
+ 			if (auto_init_ports(&domains[i]) < 0)
+ 				goto end;
+ 		}
++
++		for (i = 0; i < dst_cnt; i++) {
++			r = phc2sys_static_dst_configuration(&domains[0],
++							     dst_names[i]);
++			if (r)
++				goto end;
++		}
++
+ 		r = do_loop(domains, n_domains);
+ 		goto end;
+ 	}
