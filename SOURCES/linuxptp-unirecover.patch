@@ -1,0 +1,104 @@
+commit 71241f3fdcff59b35ad5de0b8b37cb07a4b677bd
+Author: Vincent Cheng <vscheng@gmail.com>
+Date:   Tue Sep 17 15:23:54 2024 -0400
+
+    port: Fix unicast negotiation doesn't recover after FAULT_DETECTED
+    
+    _Problem_
+    After a port link down/up or a tx_timestamp timeout issue, a port acting
+    as unicast master does not issue ANNC messages after granting unicast
+    request for ANNC.
+    
+    _Analysis_
+    When a port FAULT occurs, the port transitions to FAULTY on FAULT_DETECTED
+    and subsequently port_disable(p) and port_initialize(p) are called on port recovery.
+    
+    A port acting as a unicast master, stores clients in p->unicast_service->queue.
+    
+    When a port receives a unicast request, unicast_service_add() is called.
+    
+    In unicast_service_add(), if the request does not match an entry in
+    p->unicast_service->queue, FD_UNICAST_SRV_TIMER is started via
+    unicast_service_rearm_timer().
+    
+    If the unicast request matches an existing p->unicast_service->queue entry
+    the request is considered an extension and FD_UNICAST_SRV_TIMER must
+    already be running.
+    
+    port_disable() clears FD_UNICAST_SRV_TIMER, ie. stops FD_UNICAST_SRV_TIMER.
+    However, port_disable() does not clear p->unicast_service->queue.
+    When the port is restarted, the port retains the previous client data.
+    
+    After port recovery, when the client attempts to restart the unicast
+    service, the request matches an existing entry in p->unicast_service->queue,
+    and so FD_UNICAST_SRV_TIMER is not started because the port expected
+    that the FD_UNICAST_SRV_TIMER is already running.
+    
+    _Fix_
+    This patch clears the unicast client data in port_disable() so
+    that upon recovery, the initial unicast request will be considered
+    a new request and trigger the start of the FD_UNICAST_SRV_TIMER.
+    
+    v2:
+    - Add missing sign-off
+    - Send to develop-request instead of users list
+    
+    Signed-off-by: Vincent Cheng <vincent.cheng.xh@renesas.com>
+
+diff --git a/port.c b/port.c
+index 1bb407c..90b0860 100644
+--- a/port.c
++++ b/port.c
+@@ -1999,6 +1999,7 @@ void port_disable(struct port *p)
+ 	flush_peer_delay(p);
+ 
+ 	p->best = NULL;
++	unicast_service_clear_clients(p);
+ 	free_foreign_masters(p);
+ 	transport_close(p->trp, &p->fda);
+ 
+diff --git a/unicast_service.c b/unicast_service.c
+index 2fc2fbe..cee6691 100644
+--- a/unicast_service.c
++++ b/unicast_service.c
+@@ -583,3 +583,24 @@ int unicast_service_timer(struct port *p)
+ 	}
+ 	return err;
+ }
++
++void unicast_service_clear_clients(struct port *p)
++{
++	struct unicast_client_address *client, *temp;
++	struct unicast_service_interval *interval;
++
++	if (!p->unicast_service) {
++		return;
++	}
++
++	while ((interval = pqueue_extract(p->unicast_service->queue)) != NULL) {
++
++		LIST_REMOVE(interval, list);
++
++		LIST_FOREACH_SAFE(client, &interval->clients, list, temp) {
++			LIST_REMOVE(client, list);
++			free(client);
++		}
++		free(interval);
++	}
++}
+\ No newline at end of file
+diff --git a/unicast_service.h b/unicast_service.h
+index f0d6487..8ea1a59 100644
+--- a/unicast_service.h
++++ b/unicast_service.h
+@@ -87,4 +87,10 @@ void unicast_service_remove(struct port *p, struct ptp_message *m,
+  */
+ int unicast_service_timer(struct port *p);
+ 
++/**
++ * Clears unicast clients on a given port.
++ * @param p      The port in question.
++ */
++void unicast_service_clear_clients(struct port *p);
++
+ #endif

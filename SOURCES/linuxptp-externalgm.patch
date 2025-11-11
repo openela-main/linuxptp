@@ -1,0 +1,275 @@
+commit 120e46985e5176bc908866b76ef5be6c9abf00be
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 16 15:04:04 2025 +0100
+
+    clock: Add variables for external grandmaster.
+    
+    When ptp4l is configured to run as the server part of a bridge between
+    different domains, or a boundary clock split into multiple instances
+    (using one or two clocks), it announces its own clock identity as
+    grandmasterIdentity and stepsRemoved of 0. The clients of the server
+    don't see the true identity and distance, which can impact the result of
+    BMCA if there are multiple bridges/paths to the grandmaster. In the
+    worst case it could cause synchronization loops.
+    
+    Add new variables to the clock that will override the grandmaster
+    identity and stepsRemoved values included in announce messages to make
+    it possible to pass them from the source domain as if the bridge/BC was
+    a single PTP instance. The variables will be used only when in the
+    grandmaster state and when not zero.
+    
+    Runtime configuration over the UDS port will follow.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index 863e9d8..fb33ac0 100644
+--- a/clock.c
++++ b/clock.c
+@@ -148,6 +148,8 @@ struct clock {
+ 	int step_window_counter;
+ 	int step_window;
+ 	struct time_zone tz[MAX_TIME_ZONES];
++	struct ClockIdentity ext_gm_identity;
++	int ext_gm_steps_removed;
+ };
+ 
+ struct clock the_clock;
+@@ -830,13 +832,22 @@ static int clock_compare_pds(struct parentDS *pds1, struct parentDS *pds2)
+ static void clock_update_grandmaster(struct clock *c)
+ {
+ 	struct parentDS *pds = &c->dad.pds, old_pds = *pds;
++	struct ClockIdentity gm_identity, nul_identity;
++
++	memset(&nul_identity, 0, sizeof(nul_identity));
+ 	memset(&c->cur, 0, sizeof(c->cur));
+ 	memset(c->ptl, 0, sizeof(c->ptl));
+ 
++	if (!cid_eq(&nul_identity, &c->ext_gm_identity))
++		gm_identity = c->ext_gm_identity;
++	else
++		gm_identity = c->dds.clockIdentity;
++
++	c->cur.stepsRemoved                     = c->ext_gm_steps_removed;
+ 	pds->parentPortIdentity.clockIdentity   = c->dds.clockIdentity;
+ 	/* Follow IEEE 1588 Table 30: Updates for state decision code M1 and M2 */
+ 	pds->parentPortIdentity.portNumber      = 0;
+-	pds->grandmasterIdentity                = c->dds.clockIdentity;
++	pds->grandmasterIdentity                = gm_identity;
+ 	pds->grandmasterClockQuality            = c->dds.clockQuality;
+ 	pds->grandmasterPriority1               = c->dds.priority1;
+ 	pds->grandmasterPriority2               = c->dds.priority2;
+
+commit dfd52bff9d1b25b291aae6343154b38fb8fede4e
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jan 16 15:04:05 2025 +0100
+
+    Add management message for external grandmaster properties.
+    
+    Add EXTERNAL_GRANDMASTER_PROPERTIES_NP management message to get and set
+    the new external grandmasterIdentity and stepsRemoved variables of the
+    clock. Together with the GRANDMASTER_SETTINGS_NP message all
+    grandmaster-specific values in announce messages can be now set.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/clock.c b/clock.c
+index fb33ac0..7c30066 100644
+--- a/clock.c
++++ b/clock.c
+@@ -422,6 +422,7 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 					  struct ptp_message *req,
+ 					  struct ptp_message *rsp, int id)
+ {
++	struct external_grandmaster_properties_np *egpn;
+ 	struct alternate_time_offset_properties *atop;
+ 	struct alternate_time_offset_name *aton;
+ 	struct grandmaster_settings_np *gsn;
+@@ -582,6 +583,12 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
+ 		mtd->val = c->local_sync_uncertain;
+ 		datalen = sizeof(*mtd);
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		egpn = (struct external_grandmaster_properties_np *) tlv->data;
++		egpn->gmIdentity = c->ext_gm_identity;
++		egpn->stepsRemoved = c->ext_gm_steps_removed;
++		datalen = sizeof(*egpn);
++		break;
+ 	default:
+ 		/* The caller should *not* respond to this message. */
+ 		tlv_extra_recycle(extra);
+@@ -620,6 +627,7 @@ static int clock_management_get_response(struct clock *c, struct port *p,
+ static int clock_management_set(struct clock *c, struct port *p,
+ 				int id, struct ptp_message *req, int *changed)
+ {
++	struct external_grandmaster_properties_np *egpn;
+ 	struct alternate_time_offset_properties *atop;
+ 	struct alternate_time_offset_name *aton;
+ 	struct grandmaster_settings_np *gsn;
+@@ -710,6 +718,13 @@ static int clock_management_set(struct clock *c, struct port *p,
+ 			break;
+ 		}
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		egpn = (struct external_grandmaster_properties_np *) tlv->data;
++		c->ext_gm_identity = egpn->gmIdentity;
++		c->ext_gm_steps_removed = egpn->stepsRemoved;
++		*changed = 1;
++		respond = 1;
++		break;
+ 	}
+ 	if (respond && !clock_management_get_response(c, p, id, req))
+ 		pr_err("failed to send management set response");
+diff --git a/pmc.c b/pmc.c
+index 0b61da4..6a6a94e 100644
+--- a/pmc.c
++++ b/pmc.c
+@@ -158,6 +158,7 @@ static void pmc_show_signaling(struct ptp_message *msg, FILE *fp)
+ 
+ static void pmc_show(struct ptp_message *msg, FILE *fp)
+ {
++	struct external_grandmaster_properties_np *egpn;
+ 	struct alternate_time_offset_properties *atop;
+ 	struct alternate_time_offset_name *aton;
+ 	struct ieee_c37_238_settings_np *pwr;
+@@ -475,6 +476,14 @@ static void pmc_show(struct ptp_message *msg, FILE *fp)
+ 		fprintf(fp, "SYNCHRONIZATION_UNCERTAIN_NP "
+ 			IFMT "uncertain %hhu", mtd->val);
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		egpn = (struct external_grandmaster_properties_np *) mgt->data;
++		fprintf(fp, "EXTERNAL_GRANDMASTER_PROPERTIES_NP "
++			IFMT "gmIdentity   %s"
++			IFMT "stepsRemoved %hu",
++			cid2str(&egpn->gmIdentity),
++			egpn->stepsRemoved);
++		break;
+ 	case MID_PORT_DATA_SET:
+ 		p = (struct portDS *) mgt->data;
+ 		if (p->portState > PS_SLAVE) {
+diff --git a/pmc_common.c b/pmc_common.c
+index 7c77a10..b55e7ec 100644
+--- a/pmc_common.c
++++ b/pmc_common.c
+@@ -132,6 +132,7 @@ struct management_id idtab[] = {
+ 	{ "GRANDMASTER_SETTINGS_NP", MID_GRANDMASTER_SETTINGS_NP, do_set_action },
+ 	{ "SUBSCRIBE_EVENTS_NP", MID_SUBSCRIBE_EVENTS_NP, do_set_action },
+ 	{ "SYNCHRONIZATION_UNCERTAIN_NP", MID_SYNCHRONIZATION_UNCERTAIN_NP, do_set_action },
++	{ "EXTERNAL_GRANDMASTER_PROPERTIES_NP", MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP, do_set_action },
+ /* Port management ID values */
+ 	{ "NULL_MANAGEMENT", MID_NULL_MANAGEMENT, null_management },
+ 	{ "CLOCK_DESCRIPTION", MID_CLOCK_DESCRIPTION, do_get_action },
+@@ -172,6 +173,7 @@ static void do_set_action(struct pmc *pmc, int action, int index, char *str)
+ {
+ 	int cnt, code = idtab[index].code, freq_traceable, leap_59, leap_61,
+ 		ptp_timescale, time_traceable, utc_off_valid;
++	struct external_grandmaster_properties_np egpn;
+ 	struct alternate_time_offset_properties atop;
+ 	struct ieee_c37_238_settings_np pwr;
+ 	struct grandmaster_settings_np gsn;
+@@ -183,6 +185,7 @@ static void do_set_action(struct pmc *pmc, int action, int index, char *str)
+ 	char onoff_parent_data_set[4] = "off";
+ 	char onoff_cmlds[4] = "off";
+ 	char display_name[11] = {0};
++	char identity[19];
+ 	uint64_t jump;
+ 	uint8_t key;
+ 	int enable;
+@@ -400,6 +403,19 @@ static void do_set_action(struct pmc *pmc, int action, int index, char *str)
+ 				IEEE_C37_238_VERSION_2017);
+ 		}
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		cnt = sscanf(str, " %*s %*s "
++			     "gmIdentity   %18s "
++			     "stepsRemoved %hu ",
++			     identity,
++			     &egpn.stepsRemoved);
++		if (cnt != 2 || str2cid(identity, &egpn.gmIdentity)) {
++			fprintf(stderr, "%s SET needs 2 values\n",
++				idtab[index].name);
++			break;
++		}
++		pmc_send_set_action(pmc, code, &egpn, sizeof(egpn));
++		break;
+ 	}
+ }
+ 
+@@ -704,6 +720,9 @@ static int pmc_tlv_datalen(struct pmc *pmc, int id)
+ 	case MID_POWER_PROFILE_SETTINGS_NP:
+ 		len += sizeof(struct ieee_c37_238_settings_np);
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		len += sizeof(struct external_grandmaster_properties_np);
++		break;
+ 	case MID_LOG_ANNOUNCE_INTERVAL:
+ 	case MID_ANNOUNCE_RECEIPT_TIMEOUT:
+ 	case MID_LOG_SYNC_INTERVAL:
+diff --git a/tlv.c b/tlv.c
+index b22277c..0639a71 100644
+--- a/tlv.c
++++ b/tlv.c
+@@ -164,6 +164,7 @@ static void alttime_offset_pre_send(struct tlv_extra *extra)
+ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
+ 			 struct tlv_extra *extra)
+ {
++	struct external_grandmaster_properties_np *egpn;
+ 	struct alternate_time_offset_properties *atop;
+ 	struct alternate_time_offset_name *aton;
+ 	struct ieee_c37_238_settings_np *pwr;
+@@ -490,6 +491,12 @@ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
+ 		NTOHL(cmlds->scaledNeighborRateRatio);
+ 		NTOHL(cmlds->as_capable);
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		if (data_len != sizeof(struct external_grandmaster_properties_np))
++			goto bad_length;
++		egpn = (struct external_grandmaster_properties_np *) m->data;
++		NTOHS(egpn->stepsRemoved);
++		break;
+ 	case MID_SAVE_IN_NON_VOLATILE_STORAGE:
+ 	case MID_RESET_NON_VOLATILE_STORAGE:
+ 	case MID_INITIALIZE:
+@@ -513,6 +520,7 @@ bad_length:
+ 
+ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
+ {
++	struct external_grandmaster_properties_np *egpn;
+ 	struct alternate_time_offset_properties *atop;
+ 	struct ieee_c37_238_settings_np *pwr;
+ 	struct unicast_master_table_np *umtn;
+@@ -688,6 +696,10 @@ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
+ 		HTONL(cmlds->scaledNeighborRateRatio);
+ 		HTONL(cmlds->as_capable);
+ 		break;
++	case MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP:
++		egpn = (struct external_grandmaster_properties_np *)m->data;
++		HTONS(egpn->stepsRemoved);
++		break;
+ 	}
+ }
+ 
+diff --git a/tlv.h b/tlv.h
+index 1b464f3..f0c47ce 100644
+--- a/tlv.h
++++ b/tlv.h
+@@ -100,6 +100,7 @@ enum management_action {
+ #define MID_GRANDMASTER_SETTINGS_NP			0xC001
+ #define MID_SUBSCRIBE_EVENTS_NP				0xC003
+ #define MID_SYNCHRONIZATION_UNCERTAIN_NP		0xC006
++#define MID_EXTERNAL_GRANDMASTER_PROPERTIES_NP		0xC00D
+ 
+ /* Port management ID values */
+ #define MID_NULL_MANAGEMENT				0x0000
+@@ -489,6 +490,11 @@ struct msg_interface_rate_tlv {
+        UInteger16    numberOfBitsAfterTimestamp;
+ } PACKED;
+ 
++struct external_grandmaster_properties_np {
++	struct ClockIdentity gmIdentity;
++	UInteger16 stepsRemoved;
++} PACKED;
++
+ /**
+  * Allocates a new tlv_extra structure.
+  * @return  Pointer to a new structure on success or NULL otherwise.

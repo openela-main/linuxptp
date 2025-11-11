@@ -6,7 +6,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	2%{?dist}
+Release:	4%{?dist}
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -35,6 +35,14 @@ Patch2:		linuxptp-udpaddr.patch
 Patch3:		linuxptp-staticauto.patch
 # don't require -O option without -a and -w in phc2sys
 Patch4:		linuxptp-nowait.patch
+# add experimental option for external PPS in ts2phc automatic mode
+Patch8:		linuxptp-externalpps.patch
+# add command to set external grandmaster properties
+Patch9:		linuxptp-externalgm.patch
+# refresh link status on faults
+Patch10:	linuxptp-rtnlinit.patch
+# fix unicast server to recover after port fault
+Patch11:	linuxptp-unirecover.patch
 
 BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
 
@@ -174,6 +182,15 @@ fi
 %{_mandir}/man8/*.8*
 
 %changelog
+* Wed May 28 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-4
+- fix unicast server to recover after port fault (RHEL-93497)
+
+* Wed May 14 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-3
+- add experimental option for external PPS in ts2phc automatic mode
+  (RHEL-89605)
+- add command to set external grandmaster properties (RHEL-91310)
+- refresh link status on faults (RHEL-89811)
+
 * Thu Jan 30 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-2
 - update selinux policy (RHEL-76786)
 - harden systemd services (RHEL-76760)
