@@ -6,7 +6,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	4%{?dist}
+Release:	5%{?dist}
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -43,6 +43,8 @@ Patch9:		linuxptp-externalgm.patch
 Patch10:	linuxptp-rtnlinit.patch
 # fix unicast server to recover after port fault
 Patch11:	linuxptp-unirecover.patch
+# handle missing pulses in ts2phc
+Patch13:	linuxptp-ppsmiss.patch
 
 BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
 
@@ -182,6 +184,9 @@ fi
 %{_mandir}/man8/*.8*
 
 %changelog
+* Tue Sep 23 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-5
+- handle missing pulses in ts2phc (RHEL-112344)
+
 * Wed May 28 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-4
 - fix unicast server to recover after port fault (RHEL-93497)
 
