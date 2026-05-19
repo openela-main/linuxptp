@@ -6,7 +6,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	5%{?dist}
+Release:	8%{?dist}
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -18,6 +18,8 @@ Source2:	ptp4l.service
 Source3:	timemaster.service
 Source4:	timemaster.conf
 Source5:	ptp4l.conf
+Source6:	linuxptp.sysusers
+Source7:	linuxptp.tmpfiles
 # external test suite
 Source10:	https://github.com/mlichvar/linuxptp-testsuite/archive/%{testsuite_ver}/linuxptp-testsuite-%{testsuite_ver}.tar.gz
 # simulator for test suite
@@ -45,10 +47,16 @@ Patch10:	linuxptp-rtnlinit.patch
 Patch11:	linuxptp-unirecover.patch
 # handle missing pulses in ts2phc
 Patch13:	linuxptp-ppsmiss.patch
+# add support for dropping root privileges
+Patch14:	linuxptp-droproot.patch
 
-BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
+BuildRequires:	gcc gcc-c++ gnutls-devel libcap-devel make systemd
+
+# require the clock group to be defined
+Requires(pre):	setup >= 2.14.5-7
 
 %{?systemd_requires}
+%{?sysusers_requires_compat}
 
 %if 0%{?with_selinux}
 Requires:	(%{name}-selinux if selinux-policy-%{selinuxtype})
@@ -108,8 +116,11 @@ bzip2 -9 selinux/linuxptp.pp
 %makeinstall
 
 mkdir -p $RPM_BUILD_ROOT{%{_sysconfdir}/sysconfig,%{_unitdir},%{_mandir}/man5}
+mkdir -p $RPM_BUILD_ROOT{%{_sysusersdir},%{_tmpfilesdir}} 
 install -m 644 -p %{SOURCE1} %{SOURCE2} %{SOURCE3} $RPM_BUILD_ROOT%{_unitdir}
 install -m 644 -p %{SOURCE4} %{SOURCE5} $RPM_BUILD_ROOT%{_sysconfdir}
+install -m 644 -p %{SOURCE6} $RPM_BUILD_ROOT%{_sysusersdir}/linuxptp.conf
+install -m 644 -p %{SOURCE7} $RPM_BUILD_ROOT%{_tmpfilesdir}/linuxptp.conf
 
 echo 'OPTIONS="-f /etc/ptp4l.conf"' > \
 	$RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/ptp4l
@@ -132,7 +143,11 @@ export CLKNETSIM_RANDOM_SEED=26743
 %{make_build} -C clknetsim
 PATH=..:$PATH ./run
 
+%pre
+%sysusers_create_package linuxptp %{SOURCE6}
+
 %post
+%tmpfiles_create_package linuxptp %{SOURCE7}
 %systemd_post phc2sys.service ptp4l.service timemaster.service
 
 %preun
@@ -171,6 +186,8 @@ fi
 %{_unitdir}/phc2sys.service
 %{_unitdir}/ptp4l.service
 %{_unitdir}/timemaster.service
+%{_sysusersdir}/linuxptp.conf
+%{_tmpfilesdir}/linuxptp.conf
 %{_sbindir}/hwstamp_ctl
 %{_sbindir}/nsm
 %{_sbindir}/phc2sys
@@ -184,6 +201,16 @@ fi
 %{_mandir}/man8/*.8*
 
 %changelog
+* Mon Feb 02 2026 Miroslav Lichvar <mlichvar@redhat.com> 4.4-8
+- create reverse compatibility symlink to /var/run/ptp4l (RHEL-145071)
+
+* Thu Dec 11 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-7
+- add missing build requirement on lipcap-devel
+
+* Tue Dec 09 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-6
+- add support for dropping root privileges (disabled by default) (RHEL-12183)
+- create linuxptp user and /run/ptp directory
+
 * Tue Sep 23 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-5
 - handle missing pulses in ts2phc (RHEL-112344)
 
