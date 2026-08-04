@@ -4,7 +4,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	4%{?dist}
+Release:	4%{?dist}.1
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -43,8 +43,8 @@ Patch10:	linuxptp-rtnlinit.patch
 Patch11:	linuxptp-unirecover.patch
 # check for EL-specific kernels with vclock support
 Patch12:	linuxptp-vclock.patch
-# handle missing pulses in ts2phc
-Patch13:	linuxptp-ppsmiss.patch
+# fix phc2sys to not get stuck in static mode
+Patch15:	linuxptp-staticreconf.patch
 
 BuildRequires:	gcc gcc-c++ gnutls-devel make systemd
 
@@ -127,8 +127,9 @@ PATH=..:$PATH ./run
 %{_mandir}/man8/*.8*
 
 %changelog
-* Tue Sep 23 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-4
-- handle missing pulses in ts2phc (RHEL-112193)
+* Wed Jul 01 2026 Miroslav Lichvar <mlichvar@redhat.com> 4.4-4.el9_8.1
+- fix high CPU usage by ptp4l when link is down (RHEL-191410)
+- fix phc2sys to not get stuck in static mode (RHEL-187949)
 
 * Wed May 28 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.4-3
 - fix unicast server to recover after port fault (RHEL-93496)

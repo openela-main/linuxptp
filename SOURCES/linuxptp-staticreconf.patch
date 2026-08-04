@@ -1,0 +1,67 @@
+commit bed9f4725de56c2c8518482105a11fb40bbec5df
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jun 23 14:54:43 2026 +0200
+
+    phc2sys: Don't reconfigure static domain.
+    
+    When phc2sys is started without the -a and -O options, it creates a
+    single static domain and uses the pmc agent only to get the TAI-UTC
+    offset and watch for leap seconds without subscribing to the port state
+    changes.
+    
+    If ptp4l stopped responding to pmc requests for a sufficiently long
+    interval for the pmc agent to time out (3 missed responses - 180
+    seconds), phc2sys logged "Lost connection to ptp4l #1" and stopped
+    synchronizing the sink clocks. It was stuck in this state even after ptp4l
+    started responding again. This was caused by the reconfiguration of the
+    domain, which sets the source clock to NULL when the pmc agent is not
+    getting updates.
+    
+    Add a new parameter to do_loop() to indicate that the domain
+    configuration is fully static and disable the reconfiguration to avoid
+    unsetting the source clock. This fixes phc2sys to keep synchronizing the
+    clocks even when ptp4l is not responding.
+    
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/phc2sys.c b/phc2sys.c
+index 1269d18..ad24db9 100644
+--- a/phc2sys.c
++++ b/phc2sys.c
+@@ -845,7 +845,7 @@ static int update_domain_clocks(struct domain *domain)
+ 	return 0;
+ }
+ 
+-static int do_loop(struct domain *domains, int n_domains)
++static int do_loop(struct domain *domains, int n_domains, int static_config)
+ {
+ 	int i, state_changed, prev_sub;
+ 	struct timespec interval;
+@@ -890,7 +890,8 @@ static int do_loop(struct domain *domains, int n_domains)
+ 		}
+ 
+ 		if (state_changed) {
+-			reconfigure(domains, n_domains);
++			if (!static_config)
++				reconfigure(domains, n_domains);
+ 			state_changed = 0;
+ 		}
+ 
+@@ -1535,7 +1536,7 @@ int main(int argc, char *argv[])
+ 				goto end;
+ 		}
+ 
+-		r = do_loop(domains, n_domains);
++		r = do_loop(domains, n_domains, 0);
+ 		goto end;
+ 	}
+ 
+@@ -1601,7 +1602,7 @@ int main(int argc, char *argv[])
+ 		servo_sync_interval(dst->servo, 1.0);
+ 		r = do_pps_loop(&domains[0], dst, pps_fd);
+ 	} else {
+-		r = do_loop(&domains[0], 1);
++		r = do_loop(&domains[0], 1, 1);
+ 	}
+ 
+ end:

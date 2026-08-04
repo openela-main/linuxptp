@@ -73,3 +73,36 @@ index 7f945ac..1bb407c 100644
  		}
  	}
  
+commit 84c2d7f4ef7c0ff9353909194ae03e5a09aa0a12
+Author: Miroslav Lichvar (via linuxptp-devel Mailing List) <linuxptp-devel@lists.nwtime.org>
+Date:   Mon May 4 15:32:46 2026 +0200
+
+    port: Don't request sde on repeated link down event.
+    
+    When the link goes down, request a state decision event only when the
+    link status actually changed (the same status can be received multiple
+    times due to unrelated events or refresh).
+    
+    This fixes an infinite loop when the link is down and BMCA is set to
+    "noop" due to bmc_state_decision() copying the FAULTY state and
+    causing port_dispatch() to be called with EV_FAULT_DETECTED, which
+    triggers an rntl_link_status() call. The netlink response (with no
+    change in the link status) no longer forces a new state decision event.
+    
+    Fixes: a1eae149f519 ("port: Refresh link status on faults.")
+    Reported-by: Martin Pecka <peckama2@fel.cvut.cz>
+    Signed-off-by: Miroslav Lichvar <mlichvar@redhat.com>
+
+diff --git a/port.c b/port.c
+index 90b0860..05aabea 100644
+--- a/port.c
++++ b/port.c
+@@ -3042,7 +3042,7 @@ void port_link_status(void *ctx, int linkup, int ts_index)
+ 	 * A port going down can affect the BMCA result.
+ 	 * Force a state decision event.
+ 	 */
+-	if (p->link_status & LINK_DOWN)
++	if (p->link_status & LINK_STATE_CHANGED && p->link_status & LINK_DOWN)
+ 		clock_set_sde(p->clock, 1);
+ }
+ 
