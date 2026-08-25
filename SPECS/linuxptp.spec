@@ -6,7 +6,7 @@
 
 Name:		linuxptp
 Version:	4.4
-Release:	8%{?dist}
+Release:	8%{?dist}.1
 Summary:	PTP implementation for Linux
 
 License:	GPL-2.0-or-later
@@ -49,6 +49,8 @@ Patch11:	linuxptp-unirecover.patch
 Patch13:	linuxptp-ppsmiss.patch
 # add support for dropping root privileges
 Patch14:	linuxptp-droproot.patch
+# fix phc2sys to not get stuck in static mode
+Patch15:	linuxptp-staticreconf.patch
 
 BuildRequires:	gcc gcc-c++ gnutls-devel libcap-devel make systemd
 
@@ -201,6 +203,11 @@ fi
 %{_mandir}/man8/*.8*
 
 %changelog
+* Wed Jul 01 2026 Miroslav Lichvar <mlichvar@redhat.com> 4.4-8.el10_2.1
+- fix phc2sys service to allow clocks specified by interface (RHEL-191400)
+- fix high CPU usage by ptp4l when link is down (RHEL-191401)
+- fix phc2sys to not get stuck in static mode (RHEL-185752)
+
 * Mon Feb 02 2026 Miroslav Lichvar <mlichvar@redhat.com> 4.4-8
 - create reverse compatibility symlink to /var/run/ptp4l (RHEL-145071)
 
